@@ -1,0 +1,33 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Scholia</title>
+  <link rel="stylesheet" href="panel.css">
+</head>
+<body>
+  <main>
+    <header><span class="mark">S</span><div><h1>Scholia</h1><p>Select anything. Understand it in place.</p></div></header>
+    <section class="card">
+      <h2>Explain this page</h2>
+      <p>Use the current selection, or draw over a visible region. The full explanation opens next to the source.</p>
+      <button id="explain">Explain selected text</button>
+      <button id="capture" class="secondary">Capture a region</button>
+    </section>
+    <section class="card compact">
+      <span class="label">Active model</span>
+      <strong id="model">Loading…</strong>
+      <button id="settings" class="link">Provider settings</button>
+    </section>
+    <section class="card compact">
+      <span class="label">Current website</span>
+      <strong id="site">Loading…</strong>
+      <button id="site-toggle" class="secondary">Disable Scholia on this site</button>
+    </section>
+    <p id="status" role="status"></p>
+    <footer><kbd>⌘⇧E</kbd> selection <span>·</span> <kbd>⌘⇧S</kbd> region</footer>
+  </main>
+  <script type="module" src="panel.js"></script>
+</body>
+</html>

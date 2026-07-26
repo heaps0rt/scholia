@@ -1,0 +1,13 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" role="img" aria-label="Scholia">
+  <defs>
+    <linearGradient id="paper" x1="72" y1="52" x2="438" y2="468" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#466f64"/>
+      <stop offset="1" stop-color="#263f38"/>
+    </linearGradient>
+  </defs>
+  <rect x="24" y="24" width="464" height="464" rx="112" fill="url(#paper)"/>
+  <path d="M105 108v296" stroke="#d5bd78" stroke-width="12" stroke-linecap="round" opacity=".9"/>
+  <path d="M146 124h256M146 388h256" stroke="#f7f3e8" stroke-width="8" stroke-linecap="round" opacity=".16"/>
+  <text x="270" y="348" fill="#fffdf6" font-family="Georgia, 'Times New Roman', serif" font-size="286" font-weight="700" text-anchor="middle">S</text>
+  <path d="M405 91l8 27 27 8-27 8-8 27-8-27-27-8 27-8z" fill="#e6cf89"/>
+</svg>

@@ -1,0 +1,27 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://scholia.app/schemas/explain-request.schema.json",
+  "title": "Scholia explain request",
+  "type": "object",
+  "required": ["kind", "question"],
+  "properties": {
+    "kind": { "enum": ["text", "latex", "image"] },
+    "question": { "type": "string", "maxLength": 30000 },
+    "selection": { "type": "string", "maxLength": 30000 },
+    "imageDataUrl": {
+      "type": "string",
+      "pattern": "^data:image/[a-zA-Z0-9.+-]+;base64,",
+      "maxLength": 14000000
+    },
+    "source": {
+      "type": "object",
+      "properties": {
+        "title": { "type": "string" },
+        "url": { "type": "string", "format": "uri" },
+        "context": { "type": "string", "maxLength": 8000 }
+      },
+      "additionalProperties": false
+    }
+  },
+  "additionalProperties": false
+}

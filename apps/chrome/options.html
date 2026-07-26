@@ -1,0 +1,97 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Scholia settings</title>
+  <link rel="stylesheet" href="options.css">
+</head>
+<body>
+  <main class="shell">
+    <header class="hero">
+      <div class="mark">S</div>
+      <div>
+        <p class="eyebrow">Select anything · understand it in place</p>
+        <h1>Scholia settings</h1>
+        <p>Choose where explanations run. Credentials stay inside Chrome's extension storage and are never inserted into a web page.</p>
+      </div>
+    </header>
+
+    <form id="settings-form">
+      <section class="card grid-two">
+        <label>
+          <span>Active provider</span>
+          <select id="provider"></select>
+        </label>
+        <label>
+          <span>Answer language</span>
+          <select id="language">
+            <option value="auto">Match the page</option>
+            <option value="en">English</option>
+            <option value="no">Norsk bokmål</option>
+          </select>
+        </label>
+        <label class="check"><input id="explain-on-selection" type="checkbox"><span>Show the Explain pill after selecting text</span></label>
+        <label class="check"><input id="include-context" type="checkbox"><span>Include nearby page text as reference context</span></label>
+      </section>
+
+      <section class="card provider-card">
+        <div class="section-heading">
+          <div><p class="eyebrow">Provider configuration</p><h2 id="provider-name">Provider</h2></div>
+          <span id="vision-badge" class="badge">Vision</span>
+        </div>
+        <label>
+          <span>Model</span>
+          <input id="model" list="model-list" autocomplete="off" spellcheck="false">
+          <datalist id="model-list"></datalist>
+          <small>You may type an exact model ID even when it is not in the suggested list.</small>
+        </label>
+        <label id="reasoning-row" hidden>
+          <span>Reasoning effort</span>
+          <select id="reasoning"></select>
+        </label>
+        <label id="fast-row" class="check" hidden><input id="fast-mode" type="checkbox"><span>Use Claude Code fast mode</span></label>
+        <label>
+          <span>Endpoint</span>
+          <input id="endpoint" type="url" spellcheck="false" autocomplete="off">
+        </label>
+        <label id="key-row">
+          <span>API key</span>
+          <div class="key-field"><input id="api-key" type="password" autocomplete="off" spellcheck="false"><button id="reveal-key" type="button" class="quiet">Show</button></div>
+          <small id="key-hint"></small>
+        </label>
+        <p id="local-note" class="note" hidden>Local providers do not need a cloud API key. Chrome may still require the local server to allow extension requests.</p>
+        <div id="bridge-card" class="bridge-box" hidden>
+          <div class="bridge-status"><span id="bridge-dot" class="status-dot is-checking"></span><strong id="bridge-status">Checking local bridge…</strong></div>
+          <p id="bridge-detail"></p>
+          <div class="bridge-actions">
+            <button id="bridge-start" type="button" class="primary">Start bridge</button>
+            <button id="bridge-copy" type="button" class="secondary">Copy start command</button>
+            <button id="bridge-install" type="button" class="secondary">Copy launcher installer</button>
+          </div>
+        </div>
+      </section>
+
+      <section class="card">
+        <div class="section-heading"><div><p class="eyebrow">Website access</p><h2>Disabled websites</h2></div></div>
+        <p class="section-copy">Use ⊘ in the selection popup to disable Scholia for a website. Re-enable one here or from the toolbar panel.</p>
+        <div id="disabled-sites" class="site-list"></div>
+        <p id="disabled-sites-empty" class="note">Scholia is enabled on every website.</p>
+      </section>
+
+      <div class="actions">
+        <button id="test" type="button" class="secondary">Test provider</button>
+        <button type="submit" class="primary">Save settings</button>
+        <span id="status" role="status"></span>
+      </div>
+    </form>
+
+    <section class="privacy">
+      <h2>Privacy boundary</h2>
+      <p>Scholia captures only after an explicit selection or capture gesture. The selected material, nearby context, and your question are sent to the provider you configure. There is no Scholia backend, analytics, or telemetry.</p>
+      <p>Because ordinary extension storage is not an operating-system keychain, use a dedicated, revocable provider key with a spending limit.</p>
+    </section>
+  </main>
+  <script type="module" src="options.js"></script>
+</body>
+</html>

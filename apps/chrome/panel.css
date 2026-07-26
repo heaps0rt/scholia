@@ -1,0 +1,22 @@
+:root { color-scheme: light dark; --accent:#385d53; --paper:#f5f3ec; --card:#fffefa; --ink:#17231f; --muted:#68736f; --line:rgba(34,55,49,.15); font-family:Inter,ui-sans-serif,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif; background:var(--paper); color:var(--ink); }
+* { box-sizing:border-box; }
+body { margin:0; min-width:260px; background:radial-gradient(circle at 85% 0,rgba(176,146,73,.18),transparent 17rem),var(--paper); }
+main { padding:22px 16px; }
+header { display:flex; gap:11px; align-items:center; margin:4px 0 22px; }
+.mark { width:38px;height:38px;display:grid;place-items:center;border-radius:11px;background:linear-gradient(145deg,var(--accent),#70775e);color:white;font:700 22px Georgia,serif; }
+h1,h2 { font-family:Georgia,"Times New Roman",serif; }
+h1 { margin:0;font-size:23px; }
+header p { margin:2px 0 0;color:var(--muted);font-size:11px; }
+.card { margin-bottom:12px;padding:15px;border:1px solid var(--line);border-radius:13px;background:color-mix(in srgb,var(--card) 94%,transparent);box-shadow:0 8px 25px rgba(26,45,39,.07); }
+h2 { margin:0 0 7px;font-size:18px; }
+.card p { margin:0 0 13px;color:var(--muted);font-size:12px;line-height:1.5; }
+button { width:100%;min-height:39px;margin-top:7px;border:0;border-radius:8px;padding:8px 10px;background:var(--accent);color:white;font:inherit;font-size:12px;font-weight:700;cursor:pointer; }
+button.secondary { border:1px solid var(--line);background:var(--card);color:var(--ink); }
+.compact { display:grid;gap:4px; }
+.label { color:var(--muted);font-size:10px;text-transform:uppercase;letter-spacing:.08em;font-weight:800; }
+.compact strong { overflow-wrap:anywhere;font-size:12px; }
+button.link { width:auto;min-height:0;margin:6px 0 0;padding:0;background:transparent;color:var(--accent);text-align:left; }
+#status { min-height:18px;color:var(--muted);font-size:11px;line-height:1.45; }
+footer { padding-top:12px;border-top:1px solid var(--line);color:var(--muted);font-size:10px;text-align:center; }
+kbd { padding:2px 4px;border:1px solid var(--line);border-radius:4px;background:var(--card);font-family:inherit; }
+@media(prefers-color-scheme:dark){:root{--accent:#8db8aa;--paper:#151d1b;--card:#202a27;--ink:#e9efed;--muted:#9faca8;--line:rgba(230,240,236,.14)}}
