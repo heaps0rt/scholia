@@ -17,8 +17,13 @@ assets required by Manifest V3.
 - Click MathJax: select its whole source expression.
 - Option/Alt-click MathJax: choose the exact symbol, then use Narrower/Wider.
 - Shift+Alt-click, or press **+ symbol**, to select several math symbols.
+- Select text or mathematics inside an assistant answer to explain it in a new
+  layer. The parent answer and conversation remain available as context, and
+  Back returns to the previous layer.
 - Press ⊘ in the popup to disable Scholia for that website; re-enable it from
   the toolbar panel.
+- Settings can switch website access to allowlist mode; the toolbar then adds
+  or removes the current website from the whitelist.
 - `Command+Shift+E` / `Ctrl+Shift+E`: explain the current selection.
 - `Command+Shift+S` / `Ctrl+Shift+S`: capture a visible region.
 - Toolbar icon: open the launcher side panel.

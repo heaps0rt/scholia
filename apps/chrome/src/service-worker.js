@@ -2,8 +2,10 @@ import {
   DEFAULT_SETTINGS,
   SETTINGS_KEY,
   mergeSettings,
+  normalizeSiteKey,
   providerById,
-  publicSettings
+  publicSettings,
+  siteIsEnabled
 } from '../../../packages/core/src/providers.js';
 import { checkBridgeStatus, runCompletion } from './provider-runtime.js';
 
@@ -40,14 +42,7 @@ async function sendToActiveTab(message) {
 }
 
 function siteKey(rawUrl) {
-  try {
-    const url = new URL(rawUrl);
-    if (url.protocol === 'http:' || url.protocol === 'https:') return url.hostname.toLowerCase();
-    if (url.protocol === 'file:') return 'file://';
-    return url.protocol.toLowerCase();
-  } catch {
-    return '';
-  }
+  return normalizeSiteKey(rawUrl);
 }
 
 async function activeSite() {
@@ -55,18 +50,25 @@ async function activeSite() {
   const site = siteKey(tab?.url || '');
   if (!site) throw new Error('This page cannot be configured per site.');
   const settings = await loadSettings();
-  return { site, enabled: !settings.disabledSites.includes(site) };
+  return { site, enabled: siteIsEnabled(settings, site), mode: settings.siteAccessMode };
 }
 
 async function setSiteEnabled(site, enabled) {
   if (!site) throw new Error('This page cannot be configured per site.');
   const settings = await loadSettings();
-  const disabled = new Set(settings.disabledSites);
-  if (enabled) disabled.delete(site);
-  else disabled.add(site);
-  settings.disabledSites = [...disabled].sort();
+  if (settings.siteAccessMode === 'allowlist') {
+    const allowed = new Set(settings.allowedSites);
+    if (enabled) allowed.add(site);
+    else allowed.delete(site);
+    settings.allowedSites = [...allowed].sort();
+  } else {
+    const disabled = new Set(settings.disabledSites);
+    if (enabled) disabled.delete(site);
+    else disabled.add(site);
+    settings.disabledSites = [...disabled].sort();
+  }
   await saveSettings(settings);
-  return { site, enabled: !settings.disabledSites.includes(site) };
+  return { site, enabled: siteIsEnabled(settings, site), mode: settings.siteAccessMode };
 }
 
 chrome.commands.onCommand.addListener((command) => {

@@ -20,12 +20,26 @@ const shared = {
   logLevel: 'info'
 };
 
+const katexStringRenderer = {
+  name: 'katex-string-renderer',
+  setup(buildContext) {
+    buildContext.onLoad({ filter: /[/\\]katex[/\\]dist[/\\]katex\.mjs$/ }, async ({ path }) => {
+      const source = await readFile(path, 'utf8');
+      const guardStart = source.indexOf('// KaTeX\'s styles don\'t work properly in quirks mode.');
+      const guardEnd = source.indexOf('/**\n * Parse and build an expression, and return the markup for that.', guardStart);
+      if (guardStart < 0 || guardEnd < 0) throw new Error('Could not isolate the KaTeX DOM-rendering guard.');
+      return { contents: `${source.slice(0, guardStart)}${source.slice(guardEnd)}`, loader: 'js' };
+    });
+  }
+};
+
 await build({
   ...shared,
   entryPoints: [join(sourceRoot, 'content.js')],
   outfile: join(outputRoot, 'content.js'),
   format: 'iife',
-  loader: { '.css': 'text' }
+  loader: { '.css': 'text' },
+  plugins: [katexStringRenderer]
 });
 
 await build({

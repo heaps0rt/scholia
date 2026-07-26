@@ -12,11 +12,17 @@ const basePayload = {
 
 test('OpenAI-compatible request keeps the system prompt outside page content', () => {
   const settings = mergeSettings({ apiKeys: { openai: 'secret' } });
-  const request = buildProviderRequest({ ...basePayload, provider: 'openai', model: 'gpt-5-mini' }, settings);
+  const request = buildProviderRequest({
+    ...basePayload,
+    provider: 'openai',
+    model: 'gpt-5-mini',
+    parentContext: 'The parent answer defined the variable.'
+  }, settings);
   const body = JSON.parse(request.fetchOptions.body);
   assert.equal(request.fetchOptions.headers.authorization, 'Bearer secret');
   assert.equal(body.messages[0].role, 'system');
   assert.match(body.messages[1].content, /<scholia-selection>/);
+  assert.match(body.messages[1].content, /<scholia-parent-context>/);
   assert.equal(body.stream, true);
 });
 

@@ -58,6 +58,9 @@ button { min-height: 42px; border-radius: 9px; padding: 9px 15px; border: 0; cur
 .bridge-actions { display: flex; gap: 8px; flex-wrap: wrap; }
 .bridge-actions button { min-height: 36px; padding: 7px 11px; font-size: 11px; }
 .site-list { display: grid; gap: 8px; }
+.site-add { display: flex; gap: 8px; margin: 0 0 12px; }
+.site-add input { flex: 1; }
+.site-add button { flex: 0 0 auto; }
 .site-row { display: flex; align-items: center; gap: 12px; padding: 9px 10px; border: 1px solid var(--line); border-radius: 9px; background: var(--card); }
 .site-row code { min-width: 0; flex: 1; overflow-wrap: anywhere; color: var(--ink); }
 .site-row button { min-height: 32px; padding: 6px 11px; }

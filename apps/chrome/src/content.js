@@ -1,5 +1,6 @@
 import contentStyles from './content.css';
-import { PROVIDERS, modelId, modelLabel, modelReasoning, providerById } from '../../../packages/core/src/providers.js';
+import { PROVIDERS, modelId, modelLabel, modelReasoning, providerById, siteIsEnabled } from '../../../packages/core/src/providers.js';
+import { packPageContext, packParentContext } from '../../../packages/core/src/context.js';
 import { renderMarkdown } from './render.js';
 import { sendRuntimeMessage as extensionMessage } from './runtime-message.js';
 import { formatUsageRemaining } from './usage.js';
@@ -15,8 +16,7 @@ import {
   leafMathNodes,
   mathChain,
   mathContainer,
-  pageContext,
-  sourceUrl,
+  pageMetadata,
   wrappedMath
 } from './page-capture.js';
 
@@ -51,6 +51,8 @@ class ScholiaContent {
   constructor(shadow) {
     this.shadow = shadow;
     this.capture = null;
+    this.pendingCapture = null;
+    this.layers = [];
     this.mathState = null;
     this.settings = null;
     this.messages = [];
@@ -60,6 +62,7 @@ class ScholiaContent {
     this.toastTimer = null;
     this.selectionTimer = null;
     this.captureForConversation = false;
+    this.captureReturnToModal = false;
     this.popoverInteracting = false;
     this.popoverInteractionTimer = null;
     this.multiSelection = [];
@@ -93,6 +96,7 @@ class ScholiaContent {
         </div>
       </section>
       <div class="scholia-backdrop" data-backdrop hidden>
+        <div class="scholia-layer-stack" data-layer-stack aria-hidden="true"></div>
         <section class="scholia-modal" role="dialog" aria-modal="true" aria-label="Scholia explanation">
           <header class="scholia-header">
             <div class="scholia-brand"><span class="scholia-mark">S</span><span class="scholia-title">Scholia</span></div>
@@ -142,7 +146,8 @@ class ScholiaContent {
     this.els = {
       pill: q('[data-pill]'), pillKind: q('[data-pill-kind]'), pillPreview: q('[data-pill-preview]'),
       pillQuestion: q('[data-pill-question]'), mathTools: q('[data-math-tools]'), addSymbol: q('[data-add-symbol]'),
-      backdrop: q('[data-backdrop]'), model: q('[data-model]'), effort: q('[data-effort]'), fast: q('[data-fast]'),
+      backdrop: q('[data-backdrop]'), layerStack: q('[data-layer-stack]'), close: q('[data-close]'),
+      model: q('[data-model]'), effort: q('[data-effort]'), fast: q('[data-fast]'),
       bridge: q('[data-bridge]'), bridgeLabel: q('[data-bridge-label]'), bridgeBar: q('[data-bridge-bar]'),
       bridgeBarText: q('[data-bridge-bar-text]'), source: q('[data-source]'),
       sourceLabel: q('[data-source-label]'), sourceText: q('[data-source-text]'), sourceImage: q('[data-source-image]'),
@@ -171,9 +176,9 @@ class ScholiaContent {
     this.bindMathTouch();
     document.addEventListener('scroll', () => {
       if (!this.els.backdrop.hidden || !this.els.captureLayer.hidden) return;
-      if (this.capture?.range && !this.els.pill.hidden) {
-        this.paintRangeHighlight(this.capture.range);
-        const rect = lastRangeRect(this.capture.range);
+      if (this.pendingCapture?.range && !this.els.pill.hidden) {
+        this.paintRangeHighlight(this.pendingCapture.range);
+        const rect = lastRangeRect(this.pendingCapture.range);
         if (rect) this.showPill(rect);
         return;
       }
@@ -183,7 +188,7 @@ class ScholiaContent {
     document.addEventListener('keydown', (event) => {
       if (event.key !== 'Escape') return;
       if (!this.els.captureLayer.hidden) this.cancelCapture();
-      else if (!this.els.backdrop.hidden) this.closeModal();
+      else if (!this.els.backdrop.hidden) this.closeTopLayer();
       else this.hidePill(false);
     }, true);
 
@@ -199,9 +204,9 @@ class ScholiaContent {
       this.multiAddMode = !this.multiAddMode;
       this.updateAddSymbolButton();
     });
-    this.shadow.querySelector('[data-close]').addEventListener('click', () => this.closeModal());
+    this.els.close.addEventListener('click', () => this.closeTopLayer());
     this.els.backdrop.addEventListener('pointerdown', (event) => {
-      if (event.target === this.els.backdrop) this.closeModal();
+      if (event.target === this.els.backdrop) this.closeTopLayer();
     });
     this.shadow.querySelector('[data-settings]').addEventListener('click', () => extensionMessage({ type: 'SCHOLIA_OPEN_OPTIONS' }).catch((error) => this.toast(error.message)));
     for (const button of this.els.disableSiteButtons) button.addEventListener('click', () => this.disableCurrentSite());
@@ -232,7 +237,7 @@ class ScholiaContent {
 
     chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
       if (message?.type === 'SCHOLIA_EXPLAIN_CURRENT') {
-        if (this.siteDisabled()) { this.toast('Scholia is disabled on this site. Re-enable it from the extension panel.'); sendResponse?.({ ok: true }); return; }
+        if (this.siteDisabled()) { this.toast(this.siteDisabledMessage()); sendResponse?.({ ok: true }); return; }
         const selected = currentSelectionCapture();
         if (!selected) this.toast('Select some text first.');
         else this.openAndAsk(selected, '');
@@ -243,7 +248,7 @@ class ScholiaContent {
         if (selected) this.openAndAsk(selected, '');
         sendResponse?.({ ok: true });
       } else if (message?.type === 'SCHOLIA_START_CAPTURE') {
-        if (this.siteDisabled()) { this.toast('Scholia is disabled on this site. Re-enable it from the extension panel.'); sendResponse?.({ ok: true }); return; }
+        if (this.siteDisabled()) { this.toast(this.siteDisabledMessage()); sendResponse?.({ ok: true }); return; }
         this.startCapture(false);
         sendResponse?.({ ok: true });
       }
@@ -257,6 +262,12 @@ class ScholiaContent {
   async refreshSettings() {
     try {
       this.settings = await extensionMessage({ type: 'SCHOLIA_GET_PUBLIC_SETTINGS' });
+      const allowlistMode = this.settings.siteAccessMode === 'allowlist';
+      for (const button of this.els.disableSiteButtons) {
+        const label = allowlistMode ? 'Remove this site from the whitelist' : 'Disable Scholia on this site';
+        button.title = label;
+        button.setAttribute('aria-label', label);
+      }
       this.populateModels();
       if (this.siteDisabled()) {
         this.hidePill(false);
@@ -268,7 +279,14 @@ class ScholiaContent {
   }
 
   siteDisabled() {
-    return Boolean(this.settings?.disabledSites?.includes(currentSiteKey()));
+    if (!this.settings) return true;
+    return !siteIsEnabled(this.settings, currentSiteKey());
+  }
+
+  siteDisabledMessage() {
+    return this.settings?.siteAccessMode === 'allowlist'
+      ? 'This site is not whitelisted. Add it from the extension panel.'
+      : 'Scholia is disabled on this site. Re-enable it from the extension panel.';
   }
 
   populateModels() {
@@ -400,8 +418,35 @@ class ScholiaContent {
       await extensionMessage({ type: 'SCHOLIA_SET_SITE_ENABLED', enabled: false });
       this.hidePill(false);
       this.closeModal();
-      this.toast(`Scholia disabled on ${currentSiteKey()}. Re-enable it from the extension panel.`, 5_000);
+      const message = this.settings?.siteAccessMode === 'allowlist'
+        ? `${currentSiteKey()} was removed from the whitelist.`
+        : `Scholia disabled on ${currentSiteKey()}. Re-enable it from the extension panel.`;
+      this.toast(message, 5_000);
     } catch (error) { this.toast(error.message); }
+  }
+
+  decorateRecursiveCapture(capture, origin) {
+    const bubble = origin?.closest?.('.scholia-message--assistant .scholia-bubble');
+    if (!bubble || this.els.backdrop.hidden || !this.layers.length) return capture;
+    const messageIndex = Number(bubble.closest('.scholia-message')?.dataset.messageIndex);
+    const response = Number.isInteger(messageIndex) ? this.messages[messageIndex]?.content : bubble.innerText;
+    const pageCapture = this.layers.at(-1)?.capture || this.capture;
+    return {
+      ...capture,
+      context: pageCapture?.context || capture.context,
+      outline: pageCapture?.outline || capture.outline,
+      pageTitle: pageCapture?.pageTitle || capture.pageTitle,
+      pageLanguage: pageCapture?.pageLanguage || capture.pageLanguage,
+      url: pageCapture?.url || capture.url,
+      packedContext: pageCapture?.packedContext,
+      parentContext: packParentContext({
+        ancestorContext: pageCapture?.parentContext,
+        messages: Number.isInteger(messageIndex) ? this.messages.slice(0, messageIndex) : this.messages,
+        response: response || '',
+        selection: capture.selection
+      }),
+      recursive: true
+    };
   }
 
   inspectSelection() {
@@ -419,14 +464,14 @@ class ScholiaContent {
     this.multiSelection = [];
     this.multiAddMode = false;
     this.singleMathPick = null;
-    this.capture = selected;
-    this.paintRangeHighlight(selected.range);
-    this.showPill(selected.rect);
+    this.pendingCapture = this.decorateRecursiveCapture(selected, selectedNode);
+    this.paintRangeHighlight(this.pendingCapture.range);
+    this.showPill(this.pendingCapture.rect);
   }
 
   showPill(rect) {
     const pill = this.els.pill;
-    const capture = this.capture;
+    const capture = this.pendingCapture;
     if (!capture) return;
     this.els.pillKind.textContent = capture.kind === 'latex' ? 'Math' : capture.kind === 'image' ? 'Image' : 'Text';
     this.els.pillPreview.textContent = collapseWhitespace(capture.preview || capture.selection).slice(0, 220);
@@ -455,6 +500,7 @@ class ScholiaContent {
       this.multiAddMode = false;
       this.singleMathPick = null;
       this.updateAddSymbolButton();
+      this.pendingCapture = null;
     }
   }
 
@@ -508,8 +554,8 @@ class ScholiaContent {
     const node = whole ? container : chain[this.mathState.depth];
     const fragment = whole ? '' : decodeMathNode(node);
     const description = whole || !fragment ? fullTex : this.describeMathSelection(container, node, fragment, fullTex);
-    this.capture = { ...this.mathState.capture, selection: description, preview: fragment || fullTex, rect: node.getBoundingClientRect() };
-    const rect = this.capture.rect;
+    this.pendingCapture = { ...this.mathState.capture, selection: description, preview: fragment || fullTex, rect: node.getBoundingClientRect() };
+    const rect = this.pendingCapture.rect;
     this.singleMathPick = whole ? null : { container, node, decoded: fragment };
     this.multiSelection = [];
     this.paintMathNodes([node]);
@@ -549,24 +595,20 @@ class ScholiaContent {
     return `${identity}${role ? ` (${role})` : ''} within the full expression ${fullTex}`;
   }
 
-  baseMathCapture(selection, preview, rect) {
-    return {
-      kind: 'latex', selection, preview,
-      context: pageContext(selection), pageTitle: document.title, url: sourceUrl(),
-      pageLanguage: document.documentElement.lang || navigator.language,
-      rect, imageDataUrl: ''
-    };
+  baseMathCapture(selection, preview, rect, origin) {
+    const capture = { kind: 'latex', selection, preview, rect };
+    return this.decorateRecursiveCapture(capture, origin);
   }
 
   selectWholeMath(container) {
     const fullTex = wrappedMath(container);
     if (!fullTex) return false;
     const rect = container.getBoundingClientRect();
-    this.mathState = { container, chain: [], depth: 0, fullTex, capture: this.baseMathCapture(fullTex, fullTex, rect) };
+    this.mathState = { container, chain: [], depth: 0, fullTex, capture: this.baseMathCapture(fullTex, fullTex, rect, container) };
     this.multiSelection = [];
     this.multiAddMode = false;
     this.singleMathPick = null;
-    this.capture = this.mathState.capture;
+    this.pendingCapture = this.mathState.capture;
     this.paintMathNodes([container]);
     this.showPill(rect);
     return true;
@@ -577,7 +619,7 @@ class ScholiaContent {
     if (!fullTex || !node || !chain.length) return false;
     this.mathState = {
       container, chain, depth: 0, fullTex,
-      capture: this.baseMathCapture(fullTex, fullTex, node.getBoundingClientRect())
+      capture: this.baseMathCapture(fullTex, fullTex, node.getBoundingClientRect(), container)
     };
     this.updateMathDepth(0);
     return true;
@@ -653,7 +695,7 @@ class ScholiaContent {
     const rect = last.getBoundingClientRect();
     this.mathState = null;
     this.singleMathPick = null;
-    this.capture = this.baseMathCapture(selection, preview, rect);
+    this.pendingCapture = this.baseMathCapture(selection, preview, rect, last);
     this.paintMathNodes(this.multiSelection.map((entry) => entry.node));
     this.showPill(rect);
   }
@@ -696,18 +738,28 @@ class ScholiaContent {
   }
 
   explainPill() {
-    if (!this.capture) return;
+    if (!this.pendingCapture) return;
+    const capture = this.pendingCapture;
     const question = this.els.pillQuestion.value.trim();
     this.els.pillQuestion.value = '';
-    this.openAndAsk(this.capture, question);
+    this.openAndAsk(capture, question);
   }
 
   openAndAsk(capture, question) {
-    this.hidePill(true);
+    const recursive = capture.recursive === true && !this.els.backdrop.hidden && this.layers.length > 0;
+    if (!recursive && capture.context === undefined) capture = { ...pageMetadata(), ...capture };
+    if (recursive && this.streaming) this.cancelRequest();
+    if (this.layers.length) this.layers.at(-1).scrollTop = this.els.messages.scrollTop;
+    this.hidePill(!recursive);
+    this.pendingCapture = null;
+    if (!recursive) this.layers = [];
+    const layer = { capture, messages: [], scrollTop: 0 };
+    this.layers.push(layer);
     this.capture = capture;
-    this.messages = [];
+    this.messages = layer.messages;
     this.renderSource();
     this.renderMessages();
+    this.renderLayerStack();
     this.els.composer.placeholder = capture.kind === 'image' ? 'Ask about the captured region…' : 'Ask a follow-up…';
     this.els.backdrop.hidden = false;
     this.updateModelControls();
@@ -719,22 +771,67 @@ class ScholiaContent {
     const capture = this.capture;
     if (!capture) { this.els.source.hidden = true; return; }
     this.els.source.hidden = false;
-    this.els.sourceLabel.textContent = capture.kind === 'image' ? 'Captured region' : capture.kind === 'latex' ? 'Selected mathematics' : 'Selected text';
+    this.els.sourceLabel.textContent = capture.recursive
+      ? capture.kind === 'latex' ? 'Mathematics selected from an explanation' : 'Selected from an explanation'
+      : capture.kind === 'image' ? 'Captured region' : capture.kind === 'latex' ? 'Selected mathematics' : 'Selected text';
     this.els.sourceText.textContent = capture.kind === 'image' ? (capture.pageTitle || 'Visible page region') : capture.selection;
     this.els.sourceImage.hidden = !capture.imageDataUrl;
     if (capture.imageDataUrl) this.els.sourceImage.src = capture.imageDataUrl;
     else this.els.sourceImage.removeAttribute('src');
   }
 
+  renderLayerStack() {
+    this.els.layerStack.textContent = '';
+    const behind = this.layers.slice(0, -1).slice(-4);
+    behind.forEach((layer, index) => {
+      const card = document.createElement('div');
+      const depth = behind.length - index;
+      card.className = 'scholia-layer-card';
+      card.style.setProperty('--scholia-layer-offset', `${depth * -12}px`);
+      card.style.setProperty('--scholia-layer-scale', String(1 - depth * 0.012));
+      card.style.setProperty('--scholia-layer-opacity', String(1 - depth * 0.08));
+      const label = document.createElement('span');
+      label.textContent = collapseWhitespace(layer.capture?.preview || layer.capture?.selection || 'Earlier explanation').slice(0, 72);
+      card.append(label);
+      this.els.layerStack.append(card);
+    });
+    const layered = this.layers.length > 1;
+    this.els.close.textContent = layered ? '←' : '×';
+    this.els.close.title = layered ? 'Back to previous explanation' : 'Close';
+    this.els.close.setAttribute('aria-label', this.els.close.title);
+  }
+
+  closeTopLayer() {
+    if (this.layers.length <= 1) {
+      this.closeModal();
+      return;
+    }
+    if (this.streaming) this.cancelRequest();
+    this.hidePill(false);
+    this.layers.pop();
+    const layer = this.layers.at(-1);
+    this.capture = layer.capture;
+    this.messages = layer.messages;
+    this.els.composer.value = '';
+    this.renderSource();
+    this.renderMessages();
+    this.els.messages.scrollTop = layer.scrollTop;
+    this.renderLayerStack();
+    this.updateModelControls();
+    try { window.getSelection()?.removeAllRanges(); } catch {}
+    this.els.close.focus();
+  }
+
   closeModal() {
     if (this.streaming) this.cancelRequest();
+    this.hidePill(false);
+    this.layers = [];
+    this.capture = null;
+    this.messages = [];
     this.els.backdrop.hidden = true;
+    this.renderLayerStack();
     this.els.bridgeBar.hidden = true;
     clearInterval(this.bridgeWatchTimer);
-    this.clearHighlights();
-    this.mathState = null;
-    this.multiSelection = [];
-    this.singleMathPick = null;
   }
 
   sendComposer() {
@@ -776,6 +873,13 @@ class ScholiaContent {
 
     const conversation = this.messages.filter((message) => !message.error).map(({ role, content }) => ({ role, content }));
     conversation.pop();
+    if (this.settings?.includePageContext && this.capture.packedContext === undefined) {
+      this.capture.packedContext = packPageContext(this.capture.context, {
+        outline: this.capture.outline,
+        selection: this.capture.preview || this.capture.selection,
+        question
+      });
+    }
     const chosen = this.selectedProviderModel();
     this.requestId = crypto.randomUUID();
     const requestId = this.requestId;
@@ -805,7 +909,8 @@ class ScholiaContent {
         this.port = null;
       } else if (message.type === 'cancelled') {
         assistant.streaming = false;
-        if (!assistant.content) this.messages = this.messages.filter((item) => item !== assistant);
+        const index = this.messages.indexOf(assistant);
+        if (!assistant.content && index >= 0) this.messages.splice(index, 1);
         this.streaming = false;
         this.renderMessages();
       }
@@ -828,7 +933,8 @@ class ScholiaContent {
         messages: conversation,
         kind: this.capture.kind,
         selection: this.capture.selection,
-        context: this.capture.context,
+        context: this.settings?.includePageContext ? this.capture.packedContext : '',
+        parentContext: this.capture.parentContext || '',
         pageTitle: this.capture.pageTitle,
         pageLanguage: this.capture.pageLanguage,
         url: this.capture.url,
@@ -839,9 +945,12 @@ class ScholiaContent {
 
   cancelRequest() {
     try { this.port?.postMessage({ type: 'cancel', requestId: this.requestId }); } catch {}
+    const assistant = this.messages.at(-1);
+    if (assistant?.role === 'assistant' && assistant.streaming) assistant.streaming = false;
     this.streaming = false;
     this.port?.disconnect();
     this.port = null;
+    this.renderMessages();
   }
 
   scheduleRender() {
@@ -859,9 +968,10 @@ class ScholiaContent {
       return;
     }
     list.textContent = '';
-    for (const message of this.messages) {
+    for (const [index, message] of this.messages.entries()) {
       const row = document.createElement('article');
       row.className = `scholia-message scholia-message--${message.role}${message.error ? ' scholia-message--error' : ''}`;
+      row.dataset.messageIndex = String(index);
       const bubble = document.createElement('div');
       bubble.className = 'scholia-bubble';
       if (message.role === 'assistant' && !message.error) bubble.innerHTML = renderMarkdown(message.content) + (message.streaming ? '<span class="scholia-caret" aria-label="Writing"></span>' : '');
@@ -932,8 +1042,9 @@ class ScholiaContent {
   }
 
   startCapture(forConversation) {
-    if (this.siteDisabled()) { this.toast('Scholia is disabled on this site. Re-enable it from the extension panel.'); return; }
+    if (this.siteDisabled()) { this.toast(this.siteDisabledMessage()); return; }
     if (this.streaming) this.cancelRequest();
+    this.captureReturnToModal = !this.els.backdrop.hidden;
     this.captureForConversation = Boolean(forConversation && this.messages.length);
     this.els.backdrop.hidden = true;
     this.hidePill();
@@ -944,8 +1055,9 @@ class ScholiaContent {
   cancelCapture() {
     this.els.captureLayer.hidden = true;
     this.els.captureRect.hidden = true;
-    if (this.captureForConversation) this.els.backdrop.hidden = false;
+    if (this.captureReturnToModal) this.els.backdrop.hidden = false;
     this.captureForConversation = false;
+    this.captureReturnToModal = false;
   }
 
   async finishCapture(rect) {
@@ -958,15 +1070,20 @@ class ScholiaContent {
       this.toast('Preparing the selected region…', 5000);
       const imageDataUrl = await cropScreenshot(screenshot, rect);
       const nextCapture = {
-        kind: 'image', selection: '', preview: 'Captured screen region', imageDataUrl,
-        context: pageContext(''), pageTitle: document.title, url: sourceUrl(),
-        pageLanguage: document.documentElement.lang || navigator.language, rect
+        kind: 'image', selection: '', preview: 'Captured screen region',
+        ...pageMetadata(), imageDataUrl, rect
       };
       if (this.captureForConversation) {
         this.capture = nextCapture;
-        this.messages = [];
+        this.messages.splice(0);
+        const layer = this.layers.at(-1);
+        if (layer) {
+          layer.capture = nextCapture;
+          layer.messages = this.messages;
+        }
         this.renderSource();
         this.renderMessages();
+        this.renderLayerStack();
         this.els.backdrop.hidden = false;
         this.els.composer.placeholder = 'Ask about the captured region…';
         this.els.composer.focus();
@@ -975,9 +1092,10 @@ class ScholiaContent {
       }
     } catch (error) {
       this.toast(error.message || 'Could not capture this region.');
-      if (this.captureForConversation) this.els.backdrop.hidden = false;
+      if (this.captureReturnToModal) this.els.backdrop.hidden = false;
     } finally {
       this.captureForConversation = false;
+      this.captureReturnToModal = false;
     }
   }
 

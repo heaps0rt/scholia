@@ -20,7 +20,7 @@
     "bridge:install:opencode": "node scripts/install-opencode-handler.mjs"
   },
   "dependencies": {
-    "katex": "^0.16.22"
+    "katex": "0.16.47"
   },
   "devDependencies": {
     "esbuild": "^0.28.1"

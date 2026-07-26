@@ -7,6 +7,18 @@ const site = document.getElementById('site');
 const siteToggle = document.getElementById('site-toggle');
 let activeSite = null;
 
+function siteStatusText({ enabled, mode }) {
+  if (mode === 'allowlist') {
+    return enabled ? 'This website is now whitelisted.' : 'This website was removed from the whitelist.';
+  }
+  return enabled ? 'Scholia is enabled here.' : 'Scholia will stay hidden on this website.';
+}
+
+function siteToggleLabel({ enabled, mode }) {
+  if (mode === 'allowlist') return enabled ? 'Remove from whitelist' : 'Whitelist this website';
+  return enabled ? 'Disable Scholia on this site' : 'Enable Scholia on this site';
+}
+
 async function command(type) {
   status.textContent = '';
   try {
@@ -26,7 +38,7 @@ siteToggle.addEventListener('click', async () => {
   try {
     activeSite = await message({ type: 'SCHOLIA_SET_ACTIVE_SITE_ENABLED', enabled: !activeSite.enabled });
     renderSite();
-    status.textContent = activeSite.enabled ? 'Scholia is enabled here.' : 'Scholia will stay hidden on this website.';
+    status.textContent = siteStatusText(activeSite);
   } catch (error) {
     status.textContent = error.message;
   } finally {
@@ -37,7 +49,7 @@ siteToggle.addEventListener('click', async () => {
 function renderSite() {
   if (!activeSite) return;
   site.textContent = activeSite.site;
-  siteToggle.textContent = activeSite.enabled ? 'Disable Scholia on this site' : 'Enable Scholia on this site';
+  siteToggle.textContent = siteToggleLabel(activeSite);
   siteToggle.classList.toggle('enable', !activeSite.enabled);
 }
 

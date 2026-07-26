@@ -8,7 +8,11 @@ Only after a user gesture, the configured AI provider may receive:
 
 - the selected text or mathematical expression;
 - the user's question and prior turns in the open Scholia conversation;
-- nearby page text, when **Include nearby page text** is enabled;
+- when explaining text selected inside an answer, the parent answer, its recent
+  conversation, and a compact trace of earlier explanation layers;
+- the full rendered page text for short pages, or a locally produced outline
+  and relevant excerpts for long pages, when **Use page-wide reference
+  context** is enabled;
 - the selected screenshot region, for a vision-capable provider;
 - the page title and URL without query parameters or fragments, as source
   context.
@@ -30,13 +34,17 @@ arbitrary pages and because `captureVisibleTab` requires host access (or a
 temporary `activeTab` grant). Scholia does not perform passive browsing-history
 collection or background screenshots.
 
-Per-site disable state stores only a hostname (for example `example.org`) in
-extension-local settings. When disabled, Scholia does not open selection or
-capture UI on that site; the toolbar panel remains available to re-enable it.
+Website policy stores only hostnames (for example `example.org`) in
+extension-local blocked or allowed lists. The default policy runs everywhere
+except blocked sites; allowlist mode keeps Scholia inactive everywhere except
+explicitly allowed sites. The toolbar panel remains available to change the
+current site's status.
 
 ## Capture guarantees
 
-- Text is read only from the current explicit selection.
+- The selected excerpt is read only from the current explicit selection.
+- When page context is enabled, rendered page text is read after the user asks
+  for an explanation and packed locally before submission.
 - A screenshot is requested only after the user starts region-capture mode and
   finishes a drag.
 - Only the selected rectangle is retained by the popup and sent to the chosen
@@ -51,6 +59,10 @@ Web-page context is placed inside explicit reference delimiters and the system
 prompt tells the model never to treat it as instructions. Model Markdown is
 HTML-escaped. The renderer supports a small formatting subset and invokes
 KaTeX with trusted commands disabled.
+
+Long-page ranking is deterministic and runs inside the content script. It does
+not make a separate model request: the complete page is considered locally,
+while only the bounded context pack leaves the browser.
 
 These measures reduce prompt-injection and rendering risk; they cannot make an
 untrusted model or provider infallible. Scholia should not be used as the sole

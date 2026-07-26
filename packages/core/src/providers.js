@@ -1,5 +1,6 @@
 export const SETTINGS_KEY = 'scholia.settings.v1';
 const DEFAULT_PROVIDER_ID = 'openai';
+const SITE_ACCESS_MODES = new Set(['blocklist', 'allowlist']);
 
 const CLAUDE_REASONING_EFFORTS = Object.freeze(['low', 'medium', 'high', 'xhigh', 'max']);
 const CODEX_REASONING_EFFORTS = Object.freeze(['minimal', 'low', 'medium', 'high', 'xhigh']);
@@ -233,6 +234,8 @@ export const DEFAULT_SETTINGS = Object.freeze({
   fastMode: false,
   includePageContext: true,
   explainOnSelection: true,
+  siteAccessMode: 'blocklist',
+  allowedSites: [],
   disabledSites: []
 });
 
@@ -257,6 +260,35 @@ export function modelDefinition(providerOrId, id) {
 
 export function modelReasoning(providerOrId, id) {
   return modelDefinition(providerOrId, id)?.reasoning || null;
+}
+
+export function normalizeSiteKey(value) {
+  const raw = String(value || '').trim();
+  if (!raw) return '';
+  if (raw.toLowerCase() === 'file://') return 'file://';
+  try {
+    const hasExplicitScheme = /^[a-z][a-z\d+.-]*:\/\//i.test(raw) || /^file:/i.test(raw);
+    const url = new URL(hasExplicitScheme ? raw : `https://${raw}`);
+    if (url.protocol === 'http:' || url.protocol === 'https:') {
+      return url.hostname.toLowerCase().replace(/\.$/, '');
+    }
+    return url.protocol === 'file:' ? 'file://' : '';
+  } catch {
+    return '';
+  }
+}
+
+function normalizeSites(values) {
+  if (!Array.isArray(values)) return [];
+  return [...new Set(values.map(normalizeSiteKey).filter(Boolean))].sort();
+}
+
+export function siteIsEnabled(settings, site) {
+  const key = normalizeSiteKey(site);
+  if (!key) return false;
+  return settings?.siteAccessMode === 'allowlist'
+    ? settings.allowedSites?.includes(key) === true
+    : settings?.disabledSites?.includes(key) !== true;
 }
 
 export function mergeSettings(raw = {}) {
@@ -308,9 +340,9 @@ export function mergeSettings(raw = {}) {
     fastMode: source.fastMode === true,
     includePageContext: source.includePageContext !== false,
     explainOnSelection: source.explainOnSelection !== false,
-    disabledSites: [...new Set(disabledSource
-      .map((site) => String(site).trim().toLowerCase())
-      .filter(Boolean))]
+    siteAccessMode: SITE_ACCESS_MODES.has(source.siteAccessMode) ? source.siteAccessMode : DEFAULT_SETTINGS.siteAccessMode,
+    allowedSites: normalizeSites(source.allowedSites),
+    disabledSites: normalizeSites(disabledSource)
   };
 }
 
@@ -325,6 +357,8 @@ export function publicSettings(settings) {
     fastMode: merged.fastMode,
     includePageContext: merged.includePageContext,
     explainOnSelection: merged.explainOnSelection,
+    siteAccessMode: merged.siteAccessMode,
+    allowedSites: merged.allowedSites,
     disabledSites: merged.disabledSites,
     configuredProviders: PROVIDERS.filter((provider) => !provider.keyRequired || Boolean(merged.apiKeys[provider.id])).map((provider) => provider.id)
   };

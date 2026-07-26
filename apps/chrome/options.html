@@ -32,7 +32,7 @@
           </select>
         </label>
         <label class="check"><input id="explain-on-selection" type="checkbox"><span>Show the Explain pill after selecting text</span></label>
-        <label class="check"><input id="include-context" type="checkbox"><span>Include nearby page text as reference context</span></label>
+        <label class="check"><input id="include-context" type="checkbox"><span>Use page-wide reference context</span></label>
       </section>
 
       <section class="card provider-card">
@@ -73,10 +73,21 @@
       </section>
 
       <section class="card">
-        <div class="section-heading"><div><p class="eyebrow">Website access</p><h2>Disabled websites</h2></div></div>
-        <p class="section-copy">Use ⊘ in the selection popup to disable Scholia for a website. Re-enable one here or from the toolbar panel.</p>
-        <div id="disabled-sites" class="site-list"></div>
-        <p id="disabled-sites-empty" class="note">Scholia is enabled on every website.</p>
+        <div class="section-heading"><div><p class="eyebrow">Website access</p><h2 id="site-list-title">Blocked websites</h2></div></div>
+        <label>
+          <span>Access policy</span>
+          <select id="site-access-mode">
+            <option value="blocklist">All websites except blocked</option>
+            <option value="allowlist">Only whitelisted websites</option>
+          </select>
+        </label>
+        <p id="site-policy-copy" class="section-copy"></p>
+        <div class="site-add">
+          <input id="site-entry" inputmode="url" spellcheck="false" autocomplete="off" placeholder="example.org" aria-label="Website hostname">
+          <button id="site-add" type="button" class="secondary">Add website</button>
+        </div>
+        <div id="site-list" class="site-list"></div>
+        <p id="site-list-empty" class="note"></p>
       </section>
 
       <div class="actions">
@@ -88,7 +99,7 @@
 
     <section class="privacy">
       <h2>Privacy boundary</h2>
-      <p>Scholia captures only after an explicit selection or capture gesture. The selected material, nearby context, and your question are sent to the provider you configure. There is no Scholia backend, analytics, or telemetry.</p>
+      <p>Scholia captures only after an explicit selection or capture gesture. Short pages are included in full; long pages are packed locally into an outline and relevant excerpts before anything is sent to your provider. There is no Scholia backend, analytics, or telemetry.</p>
       <p>Because ordinary extension storage is not an operating-system keychain, use a dedicated, revocable provider key with a spending limit.</p>
     </section>
   </main>

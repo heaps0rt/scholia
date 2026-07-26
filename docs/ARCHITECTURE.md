@@ -5,7 +5,7 @@ can feel native without drifting semantically.
 
 ```text
 platform capture adapter
-  ├─ selected text + nearby document context
+  ├─ selected text + adaptive page-wide context
   ├─ precise rendered-math selection + source notation
   └─ explicit screen-region image
                 │
@@ -37,6 +37,11 @@ The content script supports three capture adapters:
 
 - Text selection clones the selected DOM fragment and replaces accessible
   MathJax/KaTeX/MathML nodes with source-like `$...$` notation.
+- Page context starts with the complete rendered body text. Pages that fit the
+  context budget are retained verbatim. Longer pages are segmented and ranked
+  locally against the selection and initial question; the provider receives a
+  bounded pack containing a whole-page heading map, the selection neighborhood,
+  and the strongest excerpts from across the document.
 - Option/Alt-click on MathJax walks `data-mml-node` ancestors. The user can move
   narrower or wider through a symbol/sub-expression before submitting it;
   plain click selects the whole formula and multi-select can combine symbols.
@@ -47,6 +52,12 @@ The content script supports three capture adapters:
 The response popup lives in a closed Shadow DOM root so host-page CSS and most
 page scripts cannot alter it accidentally. Markdown is escaped before limited
 formatting is applied, and KaTeX runs with `trust: false`.
+
+Assistant answers remain selectable. A selection inside an answer opens a new
+layer over the current explanation; the parent layer is retained in memory and
+restored by Back. The child request receives a bounded parent-context pack with
+the complete relevant answer region, recent parent turns, and a compact trace
+of earlier layers.
 
 ### Service worker
 
@@ -64,6 +75,11 @@ an extension-owned URL.
 The long-lived chat port keeps a Manifest V3 service worker alive while an
 answer streams and gives the popup an explicit cancellation path. A heartbeat
 keeps slow local/free models alive before their first streamed token.
+
+The packed page context is fixed for the life of an explanation conversation,
+placed before the selected excerpt and question, and reused on follow-ups. This
+keeps the model's grounding stable and gives prefix-caching providers a stable
+request prefix while recent conversation turns remain bounded.
 
 Codex CLI and Claude Code use the loopback OpenAI-compatible bridges in
 `scripts/`; opencode uses its native create-session/send-message API. Health

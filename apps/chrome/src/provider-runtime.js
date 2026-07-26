@@ -109,6 +109,7 @@ function preparedConversation(payload, settings) {
       question: first.content,
       selection: payload.selection,
       context: settings.includePageContext ? payload.context : '',
+      parentContext: payload.parentContext,
       pageTitle: payload.pageTitle,
       url: payload.url,
       kind: payload.kind,

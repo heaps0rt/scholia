@@ -1,5 +1,4 @@
 const MAX_SELECTION_LENGTH = 12_000;
-const MAX_CONTEXT_LENGTH = 8_000;
 const MAX_IMAGE_EDGE = 1_800;
 
 const IGNORED_MATH_CODEPOINTS = new Set([
@@ -12,6 +11,15 @@ const LEAF_MATH_SELECTOR = [...LEAF_MATH_TYPES]
 
 export function collapseWhitespace(value) {
   return String(value || '').replace(/\s+/g, ' ').trim();
+}
+
+function normalizePageText(value) {
+  return String(value || '')
+    .replace(/\r\n?/g, '\n')
+    .replace(/[\t\f\v ]+/g, ' ')
+    .replace(/ *\n */g, '\n')
+    .replace(/\n{3,}/g, '\n\n')
+    .trim();
 }
 
 export function sourceUrl() {
@@ -201,16 +209,37 @@ function selectionTextWithMath(range, selection) {
   return collapseWhitespace(fragment.textContent) || collapseWhitespace(selection.toString());
 }
 
-export function pageContext(selectionText = '') {
-  const root = document.querySelector('article, main, [role="main"]') || document.body;
-  const text = collapseWhitespace(root?.innerText || root?.textContent || '');
-  if (!text) return '';
+export function pageContext() {
+  const extensionHost = document.getElementById('scholia-extension-root');
+  const previousDisplay = extensionHost?.style.getPropertyValue('display') || '';
+  const previousPriority = extensionHost?.style.getPropertyPriority('display') || '';
+  if (extensionHost) extensionHost.style.setProperty('display', 'none', 'important');
+  try {
+    const renderedText = document.body?.innerText || document.documentElement?.innerText || '';
+    return normalizePageText(renderedText);
+  } finally {
+    if (extensionHost) {
+      if (previousDisplay) extensionHost.style.setProperty('display', previousDisplay, previousPriority);
+      else extensionHost.style.removeProperty('display');
+    }
+  }
+}
 
-  const needle = collapseWhitespace(selectionText).slice(0, 180);
-  const match = needle ? text.indexOf(needle) : -1;
-  if (match < 0) return text.slice(0, MAX_CONTEXT_LENGTH);
-  const start = Math.max(0, match - Math.floor(MAX_CONTEXT_LENGTH * 0.45));
-  return text.slice(start, start + MAX_CONTEXT_LENGTH);
+export function pageOutline() {
+  const seen = new Set();
+  const lines = [];
+  const headings = document.querySelectorAll('h1, h2, h3, h4, h5, h6, [role="heading"]');
+  for (const heading of headings) {
+    const text = collapseWhitespace(heading.innerText).slice(0, 240);
+    if (!text) continue;
+    const tagLevel = /^H([1-6])$/.exec(heading.tagName)?.[1];
+    const level = Math.min(6, Math.max(1, Number(tagLevel || heading.getAttribute('aria-level')) || 2));
+    const key = `${level}:${text.toLowerCase()}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    lines.push(`${'  '.repeat(level - 1)}- ${text}`);
+  }
+  return lines.join('\n');
 }
 
 export function lastRangeRect(range) {
@@ -219,9 +248,10 @@ export function lastRangeRect(range) {
   return rect && (rect.width || rect.height) ? rect : null;
 }
 
-function captureMetadata(selection = '') {
+export function pageMetadata() {
   return {
-    context: pageContext(selection),
+    context: pageContext(),
+    outline: pageOutline(),
     pageTitle: document.title,
     url: sourceUrl(),
     pageLanguage: document.documentElement.lang || navigator.language,
@@ -237,8 +267,7 @@ export function currentSelectionCapture(forcedText = '') {
       kind: 'text',
       selection: forcedSelection.slice(0, MAX_SELECTION_LENGTH),
       preview: forcedSelection,
-      rect: null,
-      ...captureMetadata(forcedSelection)
+      rect: null
     };
   }
   if (!selection || selection.isCollapsed || !selection.rangeCount) return null;
@@ -252,8 +281,7 @@ export function currentSelectionCapture(forcedText = '') {
     selection: text.slice(0, MAX_SELECTION_LENGTH),
     preview: text,
     rect: lastRangeRect(range),
-    range: range.cloneRange(),
-    ...captureMetadata(text)
+    range: range.cloneRange()
   };
 }
 

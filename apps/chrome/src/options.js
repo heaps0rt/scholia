@@ -1,4 +1,4 @@
-import { PROVIDERS, mergeSettings, modelId, modelLabel, modelReasoning, providerById } from '../../../packages/core/src/providers.js';
+import { PROVIDERS, mergeSettings, modelId, modelLabel, modelReasoning, normalizeSiteKey, providerById } from '../../../packages/core/src/providers.js';
 import { sendRuntimeMessage as message } from './runtime-message.js';
 import { formatUsageRemaining } from './usage.js';
 
@@ -8,7 +8,8 @@ const elements = Object.fromEntries([
   'api-key', 'key-hint', 'local-note', 'reveal-key', 'test', 'status',
   'reasoning-row', 'reasoning', 'fast-row', 'fast-mode', 'bridge-card', 'bridge-dot',
   'bridge-status', 'bridge-detail', 'bridge-start', 'bridge-copy', 'bridge-install',
-  'disabled-sites', 'disabled-sites-empty'
+  'site-access-mode', 'site-list-title', 'site-policy-copy', 'site-entry', 'site-add',
+  'site-list', 'site-list-empty'
 ].map((id) => [id, document.getElementById(id)]));
 
 let settings = mergeSettings();
@@ -102,14 +103,29 @@ function renderAll() {
   elements.language.value = settings.language;
   elements['explain-on-selection'].checked = settings.explainOnSelection;
   elements['include-context'].checked = settings.includePageContext;
+  elements['site-access-mode'].value = settings.siteAccessMode;
   renderProvider(settings.provider);
-  renderDisabledSites();
+  renderSitePolicy();
 }
 
-function renderDisabledSites() {
-  elements['disabled-sites'].textContent = '';
-  elements['disabled-sites-empty'].hidden = settings.disabledSites.length > 0;
-  for (const site of settings.disabledSites) {
+function activeSiteList() {
+  return settings.siteAccessMode === 'allowlist' ? settings.allowedSites : settings.disabledSites;
+}
+
+function renderSitePolicy() {
+  const allowlist = settings.siteAccessMode === 'allowlist';
+  const sites = activeSiteList();
+  elements['site-list-title'].textContent = allowlist ? 'Whitelisted websites' : 'Blocked websites';
+  elements['site-policy-copy'].textContent = allowlist
+    ? 'Scholia stays inactive everywhere except the websites listed here. Add the current website quickly from the toolbar panel.'
+    : 'Scholia runs everywhere except the websites listed here. Use ⊘ in the selection popup to block the current website.';
+  elements['site-add'].textContent = allowlist ? 'Add to whitelist' : 'Block website';
+  elements['site-list-empty'].textContent = allowlist
+    ? 'No websites are whitelisted. Scholia is inactive everywhere.'
+    : 'No websites are blocked. Scholia is enabled everywhere.';
+  elements['site-list'].textContent = '';
+  elements['site-list-empty'].hidden = sites.length > 0;
+  for (const site of sites) {
     const row = document.createElement('div');
     row.className = 'site-row';
     const label = document.createElement('code');
@@ -117,15 +133,41 @@ function renderDisabledSites() {
     const button = document.createElement('button');
     button.type = 'button';
     button.className = 'quiet';
-    button.textContent = 'Enable';
+    button.textContent = allowlist ? 'Remove' : 'Enable';
     button.addEventListener('click', async () => {
-      settings.disabledSites = settings.disabledSites.filter((entry) => entry !== site);
-      renderDisabledSites();
-      try { settings = mergeSettings(await message({ type: 'SCHOLIA_SAVE_SETTINGS', settings })); }
-      catch (error) { showStatus(error.message, true); }
+      const listName = allowlist ? 'allowedSites' : 'disabledSites';
+      const nextSettings = {
+        ...settings,
+        [listName]: settings[listName].filter((entry) => entry !== site)
+      };
+      try {
+        settings = mergeSettings(await message({ type: 'SCHOLIA_SAVE_SETTINGS', settings: nextSettings }));
+        renderSitePolicy();
+      } catch (error) { showStatus(error.message, true); }
     });
     row.append(label, button);
-    elements['disabled-sites'].append(row);
+    elements['site-list'].append(row);
+  }
+}
+
+async function addSiteRule() {
+  const site = normalizeSiteKey(elements['site-entry'].value);
+  if (!site) {
+    showStatus('Enter a valid hostname such as example.org.', true);
+    return;
+  }
+  const listName = settings.siteAccessMode === 'allowlist' ? 'allowedSites' : 'disabledSites';
+  const nextSettings = {
+    ...settings,
+    [listName]: [...new Set([...settings[listName], site])].sort()
+  };
+  try {
+    settings = mergeSettings(await message({ type: 'SCHOLIA_SAVE_SETTINGS', settings: nextSettings }));
+    elements['site-entry'].value = '';
+    renderSitePolicy();
+    showStatus('Website policy saved.');
+  } catch (error) {
+    showStatus(error.message, true);
   }
 }
 
@@ -187,6 +229,7 @@ function collect() {
   settings.language = elements.language.value;
   settings.explainOnSelection = elements['explain-on-selection'].checked;
   settings.includePageContext = elements['include-context'].checked;
+  settings.siteAccessMode = elements['site-access-mode'].value;
   return settings;
 }
 
@@ -210,6 +253,14 @@ elements['reveal-key'].addEventListener('click', () => {
 });
 
 elements.model.addEventListener('input', () => renderReasoning(providerById(renderedProviderId), elements.model.value.trim()));
+elements['site-access-mode'].addEventListener('change', () => {
+  settings.siteAccessMode = elements['site-access-mode'].value;
+  renderSitePolicy();
+});
+elements['site-add'].addEventListener('click', addSiteRule);
+elements['site-entry'].addEventListener('keydown', (event) => {
+  if (event.key === 'Enter') { event.preventDefault(); addSiteRule(); }
+});
 elements['bridge-start'].addEventListener('click', openBridge);
 elements['bridge-copy'].addEventListener('click', () => copyText(bridgeStatus?.command).catch((error) => showStatus(error.message, true)));
 elements['bridge-install'].addEventListener('click', () => copyText(bridgeStatus?.installCommand).catch((error) => showStatus(error.message, true)));
