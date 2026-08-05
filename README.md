@@ -7,8 +7,6 @@ opens beside the source.
 I built it because copying half a page into a separate chat is a surprisingly
 good way to lose the thread of what you were reading.
 
-![Scholia explaining a selected paragraph](store-assets/screenshot-explain.png)
-
 It can also open a side-panel chat with the current page, read PDFs with page
 numbers intact, and search across a site when you explicitly ask it to. Long
 documents are ranked locally so the model receives a useful context pack rather
