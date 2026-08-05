@@ -2,12 +2,14 @@
 /**
  * OpenAI-compatible loopback bridge for a locally authenticated Codex CLI.
  * Every completion is ephemeral, read-only, non-interactive, and has web
- * search disabled.
+ * search disabled. Base64 image blocks are materialized only for the lifetime
+ * of the matching Codex process and passed through `codex exec --image`.
  */
 import { execFile, spawn } from 'node:child_process';
 import { createHash, randomUUID, timingSafeEqual } from 'node:crypto';
 import http from 'node:http';
 import os from 'node:os';
+import { materializeCodexImages } from './lib/codex-images.mjs';
 
 const MODELS = [
   'gpt-5.5',
@@ -20,7 +22,7 @@ const MODELS = [
 const EFFORTS = ['minimal', 'low', 'medium', 'high', 'xhigh', 'max', 'ultra'];
 const MAX_BODY_BYTES = 10 * 1024 * 1024;
 const USAGE_TTL_MS = 45_000;
-const BRIDGE_VERSION = '0.1.0';
+const BRIDGE_VERSION = '0.2.0';
 const LOCAL_ORIGIN = /^https?:\/\/(?:localhost|127\.0\.0\.1)(?::\d+)?$/i;
 const EXTENSION_ORIGIN = /^chrome-extension:\/\/[a-p]{32}$/i;
 
@@ -216,6 +218,13 @@ function completion(request, response, body) {
     return;
   }
   const effort = EFFORTS.includes(body.reasoning_effort) ? body.reasoning_effort : 'high';
+  let imageFiles;
+  try {
+    imageFiles = materializeCodexImages(body.messages);
+  } catch (error) {
+    sendError(response, 400, error.message || 'Invalid image attachment.', headers);
+    return;
+  }
   const cliArguments = [
     'exec',
     '-',
@@ -232,11 +241,19 @@ function completion(request, response, body) {
     '--config',
     `model_reasoning_effort="${effort}"`
   ];
-  const child = spawn(options.codex, cliArguments, {
-    cwd: os.tmpdir(),
-    stdio: ['pipe', 'pipe', 'pipe'],
-    env: process.env
-  });
+  if (imageFiles.paths.length) cliArguments.push('--image', ...imageFiles.paths);
+  let child;
+  try {
+    child = spawn(options.codex, cliArguments, {
+      cwd: os.tmpdir(),
+      stdio: ['pipe', 'pipe', 'pipe'],
+      env: process.env
+    });
+  } catch (error) {
+    imageFiles.cleanup();
+    sendError(response, 502, `Codex CLI failed: ${error.message}`, headers);
+    return;
+  }
 
   let answer = '';
   let buffer = '';
@@ -280,6 +297,7 @@ function completion(request, response, body) {
   child.on('close', (code) => {
     clearTimeout(timeout);
     if (forceKillTimer) clearTimeout(forceKillTimer);
+    imageFiles.cleanup();
     if (response.writableEnded || disconnected) return;
     if (buffer.trim()) handleLine(buffer);
 
@@ -379,7 +397,8 @@ const server = http.createServer((request, response) => {
       bridgeVersion: BRIDGE_VERSION,
       version: codexVersion,
       models: MODELS,
-      efforts: EFFORTS
+      efforts: EFFORTS,
+      images: true
     }, headers);
     return;
   }

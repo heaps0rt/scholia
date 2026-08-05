@@ -3,6 +3,21 @@
   "version": "0.1.0",
   "private": true,
   "description": "Select text, math, or a screen region and get a contextual AI explanation.",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/heaps0rt/scholia.git"
+  },
+  "homepage": "https://github.com/heaps0rt/scholia#readme",
+  "bugs": {
+    "url": "https://github.com/heaps0rt/scholia/issues"
+  },
+  "keywords": [
+    "chrome-extension",
+    "study",
+    "ai",
+    "pdf",
+    "math"
+  ],
   "license": "MIT",
   "type": "module",
   "engines": {
@@ -10,6 +25,7 @@
   },
   "scripts": {
     "build": "node scripts/build-chrome.mjs",
+    "package:chrome": "node scripts/package-chrome.mjs",
     "check": "node scripts/check-source.mjs && node scripts/check-macos-syntax.mjs && npm test",
     "check:dist": "node scripts/check-chrome-dist.mjs",
     "test": "node --test",
@@ -20,7 +36,8 @@
     "bridge:install:opencode": "node scripts/install-opencode-handler.mjs"
   },
   "dependencies": {
-    "katex": "0.16.47"
+    "katex": "0.16.47",
+    "pdfjs-dist": "4.10.38"
   },
   "devDependencies": {
     "esbuild": "^0.28.1"

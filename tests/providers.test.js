@@ -4,6 +4,7 @@ import {
   mergeSettings,
   modelId,
   modelLabel,
+  modelReasoning,
   normalizeSiteKey,
   providerById,
   publicSettings,
@@ -38,4 +39,17 @@ test('structured local model entries retain ids and friendly labels', () => {
   const model = providerById('codex').models[1];
   assert.equal(modelId(model), 'gpt-5.6-sol');
   assert.equal(modelLabel(model), 'GPT-5.6 Sol');
+});
+
+test('Codex local models expose and retain max reasoning effort', () => {
+  assert.equal(modelReasoning('codex', 'gpt-5.5').efforts.includes('max'), true);
+  assert.equal(modelReasoning('codex', 'gpt-5.6-terra').efforts.includes('max'), true);
+  assert.equal(modelReasoning('codex', 'gpt-5.6-luna').efforts.includes('max'), true);
+
+  const settings = mergeSettings({
+    provider: 'codex',
+    models: { codex: 'gpt-5.6-luna' },
+    reasoningEfforts: { codex: 'max' }
+  });
+  assert.equal(settings.reasoningEfforts.codex, 'max');
 });

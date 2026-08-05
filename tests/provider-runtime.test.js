@@ -42,6 +42,35 @@ test('missing hosted-provider key fails before network access', () => {
   assert.throws(() => buildProviderRequest({ ...basePayload, provider: 'openai' }, DEFAULT_SETTINGS), /Add your OpenAI API key/);
 });
 
+test('provider endpoints accept local HTTP but reject unsafe remote URLs', () => {
+  const remoteHttp = mergeSettings({
+    apiKeys: { openai: 'secret' },
+    endpoints: { openai: 'http://models.example.com/v1/chat/completions' }
+  });
+  assert.throws(
+    () => buildProviderRequest({ ...basePayload, provider: 'openai' }, remoteHttp),
+    /must use HTTPS unless it runs on this device/
+  );
+
+  const loopback = mergeSettings({
+    apiKeys: { openai: 'secret' },
+    endpoints: { openai: 'http://localhost:8080/v1/chat/completions' }
+  });
+  assert.equal(
+    buildProviderRequest({ ...basePayload, provider: 'openai' }, loopback).url,
+    'http://localhost:8080/v1/chat/completions'
+  );
+
+  const embeddedCredentials = mergeSettings({
+    apiKeys: { openai: 'secret' },
+    endpoints: { openai: 'https://user:password@models.example.com/v1/chat/completions' }
+  });
+  assert.throws(
+    () => buildProviderRequest({ ...basePayload, provider: 'openai' }, embeddedCredentials),
+    /Remove embedded credentials/
+  );
+});
+
 test('text-only provider rejects screenshots', () => {
   const settings = mergeSettings({ apiKeys: { cohere: 'secret' } });
   assert.throws(() => buildProviderRequest({
@@ -103,6 +132,33 @@ test('Codex bridge receives the selected model and raw reasoning effort', () => 
   assert.equal(body.model, 'gpt-5.6-sol');
   assert.equal(body.reasoning_effort, 'ultra');
   assert.equal(request.fetchOptions.headers.authorization, undefined);
+});
+
+test('Codex bridge health enables image forwarding', async () => {
+  const originalFetch = globalThis.fetch;
+  const requests = [];
+  globalThis.fetch = async (url, options = {}) => {
+    requests.push({ url: String(url), options });
+    if (String(url).endsWith('/health')) {
+      return Response.json({ ok: true, service: 'codex-bridge', images: true });
+    }
+    return Response.json({ choices: [{ message: { content: 'I can see it.' } }] });
+  };
+  try {
+    const settings = mergeSettings({ provider: 'codex' });
+    const result = await runCompletion({
+      ...basePayload,
+      provider: 'codex',
+      imageDataUrl: 'data:image/png;base64,aGVsbG8='
+    }, settings);
+    assert.equal(result.text, 'I can see it.');
+    assert.equal(requests[0].url, 'http://127.0.0.1:8789/health');
+    const body = JSON.parse(requests[1].options.body);
+    assert.equal(body.messages[1].content[1].type, 'image_url');
+    assert.equal(body.messages[1].content[1].image_url.url, 'data:image/png;base64,aGVsbG8=');
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
 });
 
 test('Claude Code bridge receives fast mode and a supported reasoning effort', () => {

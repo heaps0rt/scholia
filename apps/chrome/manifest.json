@@ -4,7 +4,8 @@
   "short_name": "Scholia",
   "version": "0.1.0",
   "description": "Select text, precise math, or a screen region and get a contextual AI explanation.",
-  "minimum_chrome_version": "114",
+  "homepage_url": "https://github.com/heaps0rt/scholia",
+  "minimum_chrome_version": "116",
   "permissions": [
     "activeTab",
     "contextMenus",

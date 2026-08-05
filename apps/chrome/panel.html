@@ -4,30 +4,172 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width,initial-scale=1">
   <title>Scholia</title>
+  <link rel="stylesheet" href="vendor/katex/katex.min.css">
   <link rel="stylesheet" href="panel.css">
 </head>
 <body>
-  <main>
-    <header><span class="mark">S</span><div><h1>Scholia</h1><p>Select anything. Understand it in place.</p></div></header>
-    <section class="card">
-      <h2>Explain this page</h2>
-      <p>Use the current selection, or draw over a visible region. The full explanation opens next to the source.</p>
-      <button id="explain">Explain selected text</button>
-      <button id="capture" class="secondary">Capture a region</button>
+  <main class="shell">
+    <header class="topbar">
+      <div class="brand"><span class="mark">S</span><div><h1>Scholia</h1><p>Understand what you are reading.</p></div></div>
+      <div class="topbar-actions">
+        <button id="new-chat" class="icon-button" type="button" title="Start a new contextual chat" aria-label="Start a new contextual chat" hidden>＋</button>
+        <button id="settings" class="icon-button" type="button" title="Provider settings" aria-label="Provider settings">⚙</button>
+      </div>
+    </header>
+
+    <div id="home-view" class="view home-view">
+      <section class="context-card">
+        <span id="source-badge" class="badge">Current page</span>
+        <h2 id="current-title">Loading current tab…</h2>
+        <p id="current-url" class="source-url"></p>
+        <form id="context-form" class="ask-box">
+          <label for="context-question">Chat with this content</label>
+          <textarea id="context-question" rows="3" placeholder="Ask anything about this page…" required></textarea>
+          <label id="site-scope-row" class="scope-toggle" for="site-scope" hidden>
+            <input id="site-scope" type="checkbox">
+            <span><strong>Entire site</strong><small>Crawl same-site pages and search them locally for this question.</small></span>
+          </label>
+          <div class="ask-actions">
+            <button id="choose-image" class="secondary compact-button" type="button"><span aria-hidden="true">▧</span> Image</button>
+            <button id="capture" class="secondary compact-button" type="button"><span aria-hidden="true">▣</span> Region</button>
+            <button id="ask-context" class="primary compact-button" type="submit">Ask Scholia <span aria-hidden="true">↑</span></button>
+          </div>
+        </form>
+        <p id="context-hint" class="hint">Page text is indexed locally and packed into relevant excerpts before it is sent.</p>
+        <div id="pdf-viewer-actions" class="pdf-viewer-actions" hidden>
+          <button id="open-pdf-viewer" class="secondary" type="button">Open selectable PDF view</button>
+          <span id="pdf-viewer-state">Selecting text here will show Scholia's Explain popup.</span>
+        </div>
+      </section>
+
+      <section id="paste-card" class="card" hidden>
+        <span class="badge">PDF selection</span>
+        <h2>Paste the selected text</h2>
+        <p>Chrome does not expose PDF selections to keyboard shortcuts. Copy the selection, then paste it here.</p>
+        <label class="field-label" for="paste-selection">Selected text</label>
+        <textarea id="paste-selection" rows="5" placeholder="Paste text from the PDF…"></textarea>
+        <label class="field-label" for="paste-question">Question <span>(optional)</span></label>
+        <input id="paste-question" type="text" placeholder="Explain this.">
+        <div class="button-row">
+          <button id="paste-cancel" class="secondary" type="button">Cancel</button>
+          <button id="paste-start" class="primary" type="button">Explain</button>
+        </div>
+      </section>
+
+      <section class="card compact model-card">
+        <span class="label">Active model</span>
+        <strong id="model">Loading…</strong>
+        <button id="model-settings" class="text-button" type="button">Change provider or model</button>
+      </section>
+
+      <section class="card compact site-card">
+        <span class="label">Current website</span>
+        <strong id="site">Loading…</strong>
+        <button id="site-toggle" class="secondary" type="button">Disable Scholia on this site</button>
+      </section>
+
+      <section class="card compact">
+        <span class="label">Selection shortcut</span>
+        <p class="small-copy">Select text on a web page or in Scholia PDF view to open the same Explain popup in place.</p>
+        <button id="explain" class="secondary" type="button">Explain current selection</button>
+      </section>
+
+      <p id="status" class="status" role="status"></p>
+      <footer><kbd>⌘⇧E</kbd> selection <span>·</span> <kbd>⌘⇧S</kbd> region</footer>
+    </div>
+
+    <section id="chat-view" class="view chat-view" hidden>
+      <div id="tab-changed" class="notice" hidden>
+        This chat stays grounded in its original source.
+        <button id="chat-current-tab" class="text-button" type="button">Chat with the current tab</button>
+      </div>
+
+      <section class="chat-source">
+        <div class="source-heading">
+          <span id="chat-source-badge" class="badge">Page context</span>
+          <span id="context-state" class="context-state"></span>
+        </div>
+        <strong id="chat-source-title">Current page</strong>
+        <p id="chat-source-detail" class="source-detail"></p>
+        <blockquote id="chat-selection" hidden></blockquote>
+        <img id="chat-source-image" hidden alt="Captured source region">
+      </section>
+
+      <section id="loading-card" class="loading-card" hidden aria-live="polite">
+        <span class="spinner" aria-hidden="true"></span>
+        <div><strong id="loading-title">Reading context…</strong><p id="loading-detail"></p></div>
+      </section>
+
+      <section id="pdf-fallback" class="card pdf-fallback" hidden>
+        <h2>Open the PDF for full context</h2>
+        <p id="pdf-fallback-message">Chrome would not let Scholia download this document. Choose the same PDF file, or continue with the visible page only.</p>
+        <div class="button-row stacked-small">
+          <button id="choose-pdf" class="primary" type="button">Choose PDF file</button>
+          <button id="use-visible" class="secondary" type="button">Use visible page</button>
+        </div>
+      </section>
+
+      <section id="capture-editor" class="capture-editor" hidden>
+        <div class="capture-copy"><strong>Select a region</strong><span>Drag on the visible-tab image, or use the full view.</span></div>
+        <div id="capture-stage" class="capture-stage">
+          <img id="capture-image" alt="Visible tab ready for region selection" draggable="false">
+          <div id="capture-selection" class="capture-selection" hidden></div>
+        </div>
+        <div class="button-row">
+          <button id="capture-cancel" class="secondary" type="button">Cancel</button>
+          <button id="capture-use" class="primary" type="button">Use full view</button>
+        </div>
+      </section>
+
+      <section id="messages" class="messages" aria-live="polite"></section>
+
+      <form id="composer-form" class="composer">
+        <div id="composer-selection" class="composer-selection" hidden>
+          <div>
+            <strong id="composer-selection-label">Selected from the page</strong>
+            <span id="composer-selection-text"></span>
+          </div>
+          <button id="composer-selection-clear" type="button" title="Remove selected text" aria-label="Remove selected text">×</button>
+        </div>
+        <div class="composer-row">
+          <button id="attach-image" class="icon-button composer-attach" type="button" title="Choose an image" aria-label="Choose an image">▧</button>
+          <button id="attach-region" class="icon-button composer-attach" type="button" title="Capture a visible region" aria-label="Capture a visible region">▣</button>
+          <textarea id="composer" rows="1" placeholder="Ask a follow-up…" aria-label="Ask a follow-up"></textarea>
+          <button id="send" class="send-button" type="submit" aria-label="Send">↑</button>
+        </div>
+      </form>
     </section>
-    <section class="card compact">
-      <span class="label">Active model</span>
-      <strong id="model">Loading…</strong>
-      <button id="settings" class="link">Provider settings</button>
-    </section>
-    <section class="card compact">
-      <span class="label">Current website</span>
-      <strong id="site">Loading…</strong>
-      <button id="site-toggle" class="secondary">Disable Scholia on this site</button>
-    </section>
-    <p id="status" role="status"></p>
-    <footer><kbd>⌘⇧E</kbd> selection <span>·</span> <kbd>⌘⇧S</kbd> region</footer>
+
+    <input id="pdf-file" type="file" accept="application/pdf,.pdf" hidden>
+    <input id="image-file" type="file" accept="image/*" hidden>
   </main>
+
+  <section id="response-explain" class="response-explain" role="dialog" aria-label="Ask about selected response text" hidden>
+    <div class="response-explain-preview">
+      <span class="badge">Response</span>
+      <span id="response-explain-preview"></span>
+      <button id="response-explain-cancel" type="button" title="Close" aria-label="Close">×</button>
+    </div>
+    <div class="response-explain-row">
+      <input id="response-explain-question" type="text" placeholder="Ask about this…" aria-label="Ask about selected response text">
+      <button id="response-explain-send" class="primary" type="button">Explain</button>
+    </div>
+  </section>
+
+  <div id="response-window-backdrop" class="response-window-backdrop" hidden>
+    <section class="response-window" role="dialog" aria-modal="true" aria-label="Explanation of selected response text">
+      <header class="response-window-header">
+        <div><span class="badge">Response explanation</span><strong>Explain selected text</strong></div>
+        <button id="response-window-close" class="icon-button" type="button" title="Back to sidebar chat" aria-label="Back to sidebar chat">←</button>
+      </header>
+      <blockquote id="response-window-source" class="response-window-source"></blockquote>
+      <main id="response-window-messages" class="response-window-messages" aria-live="polite"></main>
+      <form id="response-window-form" class="response-window-composer">
+        <textarea id="response-window-composer" rows="1" placeholder="Ask a follow-up…" aria-label="Ask a follow-up about this explanation"></textarea>
+        <button id="response-window-send" class="send-button" type="submit" aria-label="Send">↑</button>
+      </form>
+    </section>
+  </div>
   <script type="module" src="panel.js"></script>
 </body>
 </html>

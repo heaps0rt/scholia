@@ -1,81 +1,86 @@
 # Scholia
 
-Select text, rendered mathematics, or a visible screen region and ask for an
-explanation without leaving the source.
+Scholia is a small Chrome extension for asking questions about whatever you are
+reading. Select a sentence, an equation, or part of the screen and the answer
+opens beside the source.
 
-Scholia currently includes a production-buildable Chrome extension, shared
-provider and prompt contracts, local CLI bridges, and a native macOS
-foundation.
+I built it because copying half a page into a separate chat is a surprisingly
+good way to lose the thread of what you were reading.
 
-## Chrome extension
+![Scholia explaining a selected paragraph](store-assets/screenshot-explain.png)
 
-Node.js 20 or newer is required.
+It can also open a side-panel chat with the current page, read PDFs with page
+numbers intact, and search across a site when you explicitly ask it to. Long
+documents are ranked locally so the model receives a useful context pack rather
+than a blind wall of text.
+
+## Try it
+
+You need Node.js 20 or newer.
 
 ```sh
+git clone https://github.com/heaps0rt/scholia.git
+cd scholia
 npm ci
 npm run build
 ```
 
 Open `chrome://extensions`, enable **Developer mode**, choose **Load unpacked**,
-and select `dist/chrome`.
+and select `dist/chrome`. Then open Scholia's settings and choose a provider.
 
-- Select text to open the Explain popup.
-- Explanations use page-wide context by default. Short pages are retained in
-  full; long pages are indexed locally into a bounded outline, selection
-  neighborhood, and relevant excerpts before a provider request is made.
-- Click rendered math to select the full expression.
-- Option/Alt-click math to select a symbol or sub-expression; use
-  **Narrower**, **Wider**, or **+ symbol** to refine it.
-- Select text or mathematics inside an answer to open a child explanation.
-  Child explanations form a visible stack; Back returns to the parent answer.
-- Press `Ctrl+Shift+S` (`Command+Shift+S` on macOS) to capture a visible region.
-- Press ⊘ in the popup to disable Scholia on the current website. Re-enable it
-  from the toolbar panel or settings page.
-- Website access can instead use an allowlist, keeping Scholia inactive except
-  on explicitly whitelisted hostnames.
+Useful shortcuts:
 
-Chrome does not allow content scripts on internal pages such as
-`chrome://settings` or the Chrome Web Store.
+- `Ctrl+Shift+E` / `Command+Shift+E` explains the current selection.
+- `Ctrl+Shift+S` / `Command+Shift+S` starts a region capture.
+- Clicking the toolbar icon opens the page chat.
 
-## Providers and local bridges
+Rendered math gets a little extra care: click a formula for the whole
+expression, or Option/Alt-click to choose a symbol and move wider or narrower
+through its structure.
 
-Hosted providers use keys stored in `chrome.storage.local`; credentials remain
-inside extension-owned settings and service-worker contexts and are never
-exposed to page content. Local providers use loopback interfaces:
+## Providers
 
-| Provider | Endpoint | Start command | macOS launcher installer |
-| --- | --- | --- | --- |
-| Claude Code | `127.0.0.1:8787` | `npm run bridge:claude` | `npm run bridge:install:claude` |
-| Codex CLI | `127.0.0.1:8789` | `npm run bridge:codex` | `npm run bridge:install:codex` |
-| opencode | `127.0.0.1:4096` | `opencode serve --port 4096` | `npm run bridge:install:opencode` |
+Scholia talks directly to the provider you choose. It supports the usual hosted
+OpenAI-compatible services, Anthropic, Cohere, Ollama, and a custom endpoint.
+There are also optional loopback bridges for tools already installed on your
+machine:
 
-The bundled Codex and Claude bridges accept the Chrome extension, localhost,
-and `https://folk.ntnu.no` as browser origins, so one running bridge can serve
-both integrations. When starting opencode manually for the website, add
-`--cors https://folk.ntnu.no`.
+| Tool | Endpoint | Start it with |
+| --- | --- | --- |
+| Claude Code | `127.0.0.1:8787` | `npm run bridge:claude` |
+| Codex CLI | `127.0.0.1:8789` | `npm run bridge:codex` |
+| opencode | `127.0.0.1:4096` | `opencode serve --port 4096` |
+| Ollama | `127.0.0.1:11434` | `ollama serve` |
 
-Claude image input is disabled by default. Start its bridge with
-`node scripts/claude-code-bridge.mjs --allow-images` to opt in.
+Hosted traffic must use HTTPS. Plain HTTP is accepted only for a loopback
+service on the same device.
 
-## Repository layout
+## Privacy
 
-- `apps/chrome` — Manifest V3 extension sources and static assets.
-- `apps/macos` — SwiftUI menu-bar application foundation.
-- `packages/core` — provider definitions, prompt construction, and request
-  schema.
-- `scripts` — reproducible builds and optional local bridge tooling.
-- `tests` — focused contract, protocol, streaming, and renderer tests.
+There is no Scholia server, analytics, or telemetry. API keys stay in Chrome's
+extension storage and requests go straight to the provider you configured.
+Page reading, PDF extraction, image resizing, and long-document ranking happen
+locally first. Site-wide reading is off until you turn it on for a question.
+
+The details are in the [privacy policy](docs/PRIVACY.md). Use a dedicated,
+revocable provider key—Chrome extension storage is convenient, but it is not an
+operating-system keychain.
 
 ## Development
 
 ```sh
-npm run check       # syntax checks, Swift parsing, and tests
-npm run build       # rebuild dist/chrome from a clean directory
-npm run check:dist  # validate the packaged extension
+npm run check           # syntax checks and tests
+npm run build           # unpacked extension in dist/chrome
+npm run check:dist      # check the built package
+npm run package:chrome  # versioned Web Store ZIP
 ```
 
-Design boundaries are documented in [Architecture](docs/ARCHITECTURE.md) and
-[Privacy and security](docs/PRIVACY.md).
+The Chrome extension lives in `apps/chrome`; shared prompts and provider
+contracts live in `packages/core`. [Architecture](docs/ARCHITECTURE.md) explains
+the boundaries that keep page code, credentials, and model output apart.
+
+There is an early native macOS sketch under `apps/macos`, but the Chrome
+extension is the part meant to be used today.
 
 ## License
 

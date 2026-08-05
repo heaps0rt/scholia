@@ -1,0 +1,53 @@
+<!doctype html>
+<html lang="en" data-scholia-pdf-viewer="true">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Scholia PDF</title>
+  <link rel="stylesheet" href="pdf-viewer.css">
+</head>
+<body>
+  <header class="toolbar">
+    <div class="identity">
+      <span class="mark" aria-hidden="true">S</span>
+      <div class="document-copy">
+        <strong id="document-title">Opening PDF…</strong>
+        <span id="document-status" role="status">Preparing Scholia PDF view</span>
+      </div>
+    </div>
+
+    <div class="page-tools" aria-label="PDF navigation and zoom">
+      <span id="page-count" class="page-count">– / –</span>
+      <button id="zoom-out" class="icon-button" type="button" title="Zoom out" aria-label="Zoom out">−</button>
+      <span id="zoom-label" class="zoom-label">100%</span>
+      <button id="zoom-in" class="icon-button" type="button" title="Zoom in" aria-label="Zoom in">＋</button>
+    </div>
+
+    <div class="toolbar-actions">
+      <button id="choose-file" class="quiet-button" type="button" title="Choose another PDF">Choose file</button>
+      <button id="open-native" class="quiet-button" type="button" title="Open in Chrome's built-in PDF viewer">Chrome view</button>
+      <button id="open-chat" class="primary-button" type="button">Chat with PDF</button>
+    </div>
+  </header>
+
+  <main id="viewer" class="viewer" aria-label="PDF document">
+    <section id="loading" class="state-card" aria-live="polite">
+      <span class="spinner" aria-hidden="true"></span>
+      <div><strong>Opening your PDF</strong><p id="loading-detail">Downloading the document locally…</p></div>
+    </section>
+
+    <section id="error" class="state-card error-card" hidden>
+      <div>
+        <strong>Scholia could not open this PDF address</strong>
+        <p id="error-message"></p>
+      </div>
+      <button id="error-choose-file" class="primary-button" type="button">Choose the PDF file</button>
+    </section>
+
+    <div id="pages" class="pages pdfViewer"></div>
+  </main>
+
+  <input id="pdf-file" type="file" accept="application/pdf,.pdf" hidden>
+  <script type="module" src="pdf-viewer.js"></script>
+</body>
+</html>

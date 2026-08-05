@@ -7,7 +7,8 @@ can feel native without drifting semantically.
 platform capture adapter
   ├─ selected text + adaptive page-wide context
   ├─ precise rendered-math selection + source notation
-  └─ explicit screen-region image
+  ├─ explicit screen-region image
+  └─ explicitly chosen or clipboard-pasted image
                 │
                 ▼
        normalized explain request
@@ -54,10 +55,63 @@ page scripts cannot alter it accidentally. Markdown is escaped before limited
 formatting is applied, and KaTeX runs with `trust: false`.
 
 Assistant answers remain selectable. A selection inside an answer opens a new
-layer over the current explanation; the parent layer is retained in memory and
-restored by Back. The child request receives a bounded parent-context pack with
-the complete relevant answer region, recent parent turns, and a compact trace
-of earlier layers.
+layer over the current explanation. Every parent remains fully rendered as an
+inert panel behind the active window and is restored by Back. The child request
+receives a bounded parent-context pack with the complete relevant answer region,
+recent parent turns, and a compact trace of earlier layers.
+
+### Side panel and PDF adapter
+
+The extension-owned side panel can begin a conversation without a text
+selection. For ordinary web pages it requests a context pack from the content
+script, using the same page-title, rendered-text, outline, and local ranking
+pipeline as an in-page explanation. The packed context is fixed for that chat,
+so switching tabs does not silently change the conversation's source.
+
+Explicit page selections are briefly mirrored through `chrome.storage.session`
+so an already-open side panel—and a panel opened just after selection—can show
+the excerpt in its source card and composer. In an existing conversation the
+excerpt is scoped only to the next turn, preserving the original context pack.
+Selecting assistant text in the panel creates the same kind of bounded,
+delimited context inside a separate explanation window. That child window has
+its own transcript and follow-up composer, leaving the original sidebar chat
+unchanged behind it. Editing a main-chat user turn truncates the later
+transcript and resubmits from that point.
+
+When the user explicitly enables **Entire site**, the active content script
+performs a bounded breadth-first crawl of same-origin HTML links. It strips
+scripts, navigation, forms, and hidden content from fetched documents, reads at
+most 48 pages / 1.2 million text characters over three link levels, and caches
+the corpus locally for ten minutes. A site map plus question-ranked excerpts is
+packed into the ordinary 24,000-character model context budget. Cross-origin,
+download, sign-out, deletion, and unsubscribe links are never followed.
+
+Chrome's built-in PDF viewer does not accept Scholia's content script. The
+service worker therefore routes detected PDFs to an extension-owned PDF.js
+viewer with a canvas and selectable text layer. The standard content UI runs on
+that text layer, so pointer selection opens the same Explain pill as an ordinary
+page. A one-click **Chrome view** action bypasses routing when the native viewer
+is preferred. Existing built-in-viewer context-menu events still fall back to
+the side panel.
+
+The viewer and panel fetch the PDF under the extension's existing host
+permission and extract text locally. Each page receives an explicit marker, and
+a page map plus the selected passage and question are passed to the shared
+context packer. The original address is held behind an opaque session token;
+signed URL query data is kept for the local fetch but removed from both the
+viewer address and the URL sent to a provider.
+
+Local, authenticated, generated, password-protected, or scanned PDFs may not
+yield downloadable text. The panel offers an explicit file chooser and a
+visible-page image fallback. Region cropping and 1800-pixel down-sampling occur
+inside the panel before provider submission.
+
+Both the side-panel and in-page composers accept an explicitly selected local
+image or an image pasted from the clipboard. The browser decodes it, flattens
+transparency, and limits its longest edge to 1800 pixels before it becomes the
+source for a new conversation. The Codex loopback bridge materializes the
+base64 request block in a private temporary directory, passes the path to
+`codex exec --image`, and removes it when that process exits.
 
 ### Service worker
 
@@ -90,8 +144,9 @@ external-app confirmation.
 ### Packaged code
 
 Manifest V3 does not permit remotely hosted executable code. The build bundles
-all JavaScript and packages KaTeX CSS/fonts under `vendor/katex`. Network URLs
-inside the worker are data endpoints, not imported scripts.
+all JavaScript and packages KaTeX CSS/fonts under `vendor/katex` and PDF.js,
+its worker, character maps, and standard fonts under `vendor/pdfjs`. Network
+URLs inside the worker are data endpoints, not imported scripts.
 
 ## macOS boundaries
 

@@ -3,6 +3,27 @@ import { initialUserPrompt, normalizeLanguage, sanitizeConversation, systemPromp
 
 const opencodeSessions = new Map();
 
+function assertSecureEndpoint(endpoint, providerName) {
+  let url;
+  try {
+    url = new URL(endpoint);
+  } catch {
+    throw new Error(`Set a valid endpoint for ${providerName} in Scholia settings.`);
+  }
+
+  const host = url.hostname.toLowerCase();
+  const loopback = host === 'localhost'
+    || host.endsWith('.localhost')
+    || host === '[::1]'
+    || /^127(?:\.\d{1,3}){3}$/.test(host);
+  if (url.username || url.password) {
+    throw new Error(`Remove embedded credentials from the ${providerName} endpoint and use the API key field.`);
+  }
+  if (url.protocol !== 'https:' && !(url.protocol === 'http:' && loopback)) {
+    throw new Error(`${providerName} must use HTTPS unless it runs on this device.`);
+  }
+}
+
 function endpointBase(endpoint) {
   const clean = String(endpoint || '').trim().replace(/\/+$/, '');
   return clean.replace(/\/v1\/chat\/completions$/i, '');
@@ -44,6 +65,11 @@ export async function checkBridgeStatus(providerId, rawSettings, options = {}) {
   const endpoint = String(settings.endpoints[provider.id] || provider.endpoint).trim();
   const base = endpointBase(endpoint);
   const instructions = bridgeInstructions(provider, endpoint);
+  try {
+    assertSecureEndpoint(endpoint, provider.name);
+  } catch (error) {
+    return { up: false, provider: provider.id, label: provider.localBridge.label, base, ...instructions, error: error.message };
+  }
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), options.timeoutMs || 1_800);
   const abortFromParent = () => controller.abort();
@@ -172,6 +198,7 @@ export function buildProviderRequest(payload, rawSettings) {
   const prepared = preparedConversation(payload, settings);
 
   if (!endpoint) throw new Error(`Set an endpoint for ${provider.name} in Scholia settings.`);
+  assertSecureEndpoint(endpoint, provider.name);
   if (provider.keyRequired && !key) throw new Error(`Add your ${provider.name} API key in Scholia settings.`);
   if (prepared.image && !provider.supportsImages && !payload.bridgeSupportsImages) {
     throw new Error(`${provider.name} cannot receive images. Choose a vision-capable provider.`);
@@ -471,7 +498,9 @@ export async function runCompletion(payload, settings, onToken = () => {}, signa
   if (payload.imageDataUrl && provider.imageCapability === 'bridge-health') {
     const status = await checkBridgeStatus(provider.id, merged, { signal });
     if (!status.up) throw new Error(`${provider.localBridge.label} is offline. Start it before sending this image.`);
-    if (!status.supportsImages) throw new Error(`Restart ${provider.localBridge.label} with --allow-images to send screen captures.`);
+    if (!status.supportsImages) {
+      throw new Error(provider.imageUnavailableMessage || `Restart ${provider.localBridge.label} to send image attachments.`);
+    }
     effectivePayload = { ...payload, bridgeSupportsImages: true };
   }
   const request = buildProviderRequest(effectivePayload, merged);

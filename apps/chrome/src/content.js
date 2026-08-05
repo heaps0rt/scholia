@@ -1,9 +1,13 @@
 import contentStyles from './content.css';
 import { PROVIDERS, modelId, modelLabel, modelReasoning, providerById, siteIsEnabled } from '../../../packages/core/src/providers.js';
-import { packPageContext, packParentContext } from '../../../packages/core/src/context.js';
+import { packPageContext, packParentContext, packSiteContext } from '../../../packages/core/src/context.js';
 import { renderMarkdown } from './render.js';
 import { sendRuntimeMessage as extensionMessage } from './runtime-message.js';
 import { formatUsageRemaining } from './usage.js';
+import { createHtmlElement } from './html-elements.js';
+import { clipboardImageFile, normalizeImageFile } from './image-input.js';
+import { isolateUiInputEvents } from './ui-event-boundary.js';
+import { crawlSite, siteLinksFromDocument } from './site-context.js';
 import {
   chainAtPoint,
   collapseWhitespace,
@@ -16,18 +20,18 @@ import {
   leafMathNodes,
   mathChain,
   mathContainer,
-  pageMetadata,
+  resolvedPageMetadata,
   wrappedMath
 } from './page-capture.js';
 
 const HOST_ID = 'scholia-extension-root';
 
 function boot() {
-  const host = document.createElement('div');
+  const host = createHtmlElement('div');
   host.id = HOST_ID;
   host.style.cssText = 'all:initial;position:fixed;inset:0;z-index:2147483647;pointer-events:none;contain:layout style;';
   const shadow = host.attachShadow({ mode: 'closed' });
-  const style = document.createElement('style');
+  const style = createHtmlElement('style');
   style.textContent = contentStyles;
   shadow.append(style);
   document.documentElement.append(host);
@@ -41,7 +45,7 @@ async function loadKatexStyles(shadow) {
   try {
     const response = await fetch(chrome.runtime.getURL('vendor/katex/katex.min.css'));
     if (!response.ok) return;
-    const style = document.createElement('style');
+    const style = createHtmlElement('style');
     style.textContent = await response.text();
     shadow.prepend(style);
   } catch {}
@@ -74,12 +78,15 @@ class ScholiaContent {
     this.bridgeWatchTimer = null;
     this.longPressTimer = null;
     this.justLongPressed = false;
+    this.imageQuestionDraft = '';
+    this.siteContextCache = new Map();
+    this.lastPublishedSelection = '';
   }
 
   mount() {
-    const template = document.createElement('template');
+    const template = createHtmlElement('template');
     template.innerHTML = `
-      <section class="scholia-pill" data-pill hidden aria-label="Scholia selection actions">
+      <section class="scholia-pill" data-pill hidden role="dialog" aria-label="Ask Scholia about this selection">
         <div class="scholia-pill__preview">
           <span class="scholia-pill__kind" data-pill-kind>Text</span>
           <span class="scholia-pill__preview-text" data-pill-preview></span>
@@ -88,16 +95,16 @@ class ScholiaContent {
             <button type="button" data-narrow title="Select a smaller math part">Narrower</button>
             <button type="button" data-wider title="Select a wider math part">Wider</button>
           </span>
-          <button type="button" class="scholia-pill__site" data-disable-site title="Disable Scholia on this site" aria-label="Disable Scholia on this site">⊘ site</button>
+          <button type="button" class="scholia-pill__site" data-disable-site title="Disable Scholia on this site" aria-label="Disable Scholia on this site"><span aria-hidden="true">⊘</span></button>
         </div>
         <div class="scholia-pill__row">
-          <input data-pill-question aria-label="Ask about selection" placeholder="Ask a question, or leave blank to explain…">
+          <input data-pill-question aria-label="Ask about selection" placeholder="Ask about this…">
           <button type="button" class="scholia-primary" data-pill-send>Explain</button>
         </div>
       </section>
       <div class="scholia-backdrop" data-backdrop hidden>
         <div class="scholia-layer-stack" data-layer-stack aria-hidden="true"></div>
-        <section class="scholia-modal" role="dialog" aria-modal="true" aria-label="Scholia explanation">
+        <section class="scholia-modal" data-modal role="dialog" aria-modal="true" aria-label="Scholia explanation">
           <header class="scholia-header">
             <div class="scholia-brand"><span class="scholia-mark">S</span><span class="scholia-title">Scholia</span></div>
             <select class="scholia-model" data-model aria-label="AI model"></select>
@@ -121,11 +128,13 @@ class ScholiaContent {
           <main class="scholia-messages" data-messages><div class="scholia-empty"><strong>Ask in context</strong>Select text or capture a region, then Scholia will explain it here.</div></main>
           <footer class="scholia-composer">
             <div class="scholia-composer__box">
+              <button type="button" class="scholia-icon-button" data-image title="Choose an image" aria-label="Choose an image">▧</button>
               <button type="button" class="scholia-icon-button" data-capture title="Capture another region" aria-label="Capture another region">▣</button>
               <textarea data-composer rows="1" placeholder="Ask a follow-up…" aria-label="Ask a follow-up"></textarea>
               <button type="button" class="scholia-primary scholia-send" data-send aria-label="Send">↑</button>
             </div>
             <div class="scholia-composer__hint">Enter to send · Shift+Enter for a new line</div>
+            <input data-image-file type="file" accept="image/*" hidden>
           </footer>
         </section>
       </div>
@@ -145,29 +154,39 @@ class ScholiaContent {
     const q = (selector) => this.shadow.querySelector(selector);
     this.els = {
       pill: q('[data-pill]'), pillKind: q('[data-pill-kind]'), pillPreview: q('[data-pill-preview]'),
-      pillQuestion: q('[data-pill-question]'), mathTools: q('[data-math-tools]'), addSymbol: q('[data-add-symbol]'),
-      backdrop: q('[data-backdrop]'), layerStack: q('[data-layer-stack]'), close: q('[data-close]'),
+      pillQuestion: q('[data-pill-question]'), pillSend: q('[data-pill-send]'), mathTools: q('[data-math-tools]'), addSymbol: q('[data-add-symbol]'),
+      backdrop: q('[data-backdrop]'), layerStack: q('[data-layer-stack]'), modal: q('[data-modal]'), close: q('[data-close]'),
       model: q('[data-model]'), effort: q('[data-effort]'), fast: q('[data-fast]'),
       bridge: q('[data-bridge]'), bridgeLabel: q('[data-bridge-label]'), bridgeBar: q('[data-bridge-bar]'),
       bridgeBarText: q('[data-bridge-bar-text]'), source: q('[data-source]'),
       sourceLabel: q('[data-source-label]'), sourceText: q('[data-source-text]'), sourceImage: q('[data-source-image]'),
-      messages: q('[data-messages]'), composer: q('[data-composer]'), send: q('[data-send]'),
+      messages: q('[data-messages]'), composer: q('[data-composer]'), send: q('[data-send]'), imageFile: q('[data-image-file]'),
       toast: q('[data-toast]'), captureLayer: q('[data-capture-layer]'), captureRect: q('[data-capture-rect]')
     };
     this.els.disableSiteButtons = [...this.shadow.querySelectorAll('[data-disable-site]')];
   }
 
   bindEvents() {
+    const host = document.getElementById(HOST_ID);
+    isolateUiInputEvents(this.shadow);
+    document.addEventListener('pointerdown', (event) => {
+      if (!this.els.pill.hidden && !event.composedPath().includes(host)) this.hidePill(false);
+    }, true);
+    this.shadow.addEventListener('pointerdown', (event) => {
+      if (!this.els.pill.hidden && !event.target.closest?.('.scholia-pill')) this.hidePill(false);
+    }, true);
     document.addEventListener('pointerup', (event) => {
       if (event.altKey || this.justLongPressed || this.popoverInteracting) return;
       clearTimeout(this.selectionTimer);
       this.selectionTimer = setTimeout(() => this.inspectSelection(), event.pointerType === 'touch' ? 250 : 35);
     }, true);
-    document.addEventListener('selectionchange', () => {
+    const scheduleSelectionInspection = () => {
       if (this.popoverInteracting || this.mathState || this.multiSelection.length) return;
       clearTimeout(this.selectionTimer);
       this.selectionTimer = setTimeout(() => this.inspectSelection(), 280);
-    }, true);
+    };
+    document.addEventListener('selectionchange', scheduleSelectionInspection, true);
+    this.shadow.addEventListener('selectionchange', scheduleSelectionInspection, true);
     document.addEventListener('keyup', (event) => {
       if (event.key === 'Shift' || event.key.startsWith('Arrow') || event.key === 'Home' || event.key === 'End') this.inspectSelection();
     }, true);
@@ -194,7 +213,7 @@ class ScholiaContent {
 
     this.els.pill.addEventListener('pointerdown', () => this.markPopoverInteraction());
     this.els.pill.addEventListener('click', (event) => { this.markPopoverInteraction(); event.stopPropagation(); });
-    this.shadow.querySelector('[data-pill-send]').addEventListener('click', () => this.explainPill());
+    this.els.pillSend.addEventListener('click', () => this.explainPill());
     this.els.pillQuestion.addEventListener('keydown', (event) => {
       if (event.key === 'Enter') { event.preventDefault(); this.explainPill(); }
     });
@@ -210,11 +229,22 @@ class ScholiaContent {
     });
     this.shadow.querySelector('[data-settings]').addEventListener('click', () => extensionMessage({ type: 'SCHOLIA_OPEN_OPTIONS' }).catch((error) => this.toast(error.message)));
     for (const button of this.els.disableSiteButtons) button.addEventListener('click', () => this.disableCurrentSite());
+    this.shadow.querySelector('[data-image]').addEventListener('click', () => this.openImagePicker(this.els.composer.value));
     this.shadow.querySelector('[data-capture]').addEventListener('click', () => this.startCapture(true));
     this.els.send.addEventListener('click', () => this.sendComposer());
     this.els.composer.addEventListener('input', () => this.resizeComposer());
     this.els.composer.addEventListener('keydown', (event) => {
       if (event.key === 'Enter' && !event.shiftKey) { event.preventDefault(); this.sendComposer(); }
+    });
+    this.els.composer.addEventListener('paste', (event) => this.handleImagePaste(event));
+    this.els.pillQuestion.addEventListener('paste', (event) => this.handleImagePaste(event));
+    this.els.imageFile.addEventListener('change', () => {
+      const [file] = this.els.imageFile.files || [];
+      const question = this.imageQuestionDraft;
+      this.useImageFile(file, { question }).catch((error) => this.toast(error.message || 'Could not read that image.')).finally(() => {
+        this.els.imageFile.value = '';
+        this.imageQuestionDraft = '';
+      });
     });
     this.els.model.addEventListener('change', () => {
       this.updateModelControls();
@@ -240,23 +270,110 @@ class ScholiaContent {
         if (this.siteDisabled()) { this.toast(this.siteDisabledMessage()); sendResponse?.({ ok: true }); return; }
         const selected = currentSelectionCapture();
         if (!selected) this.toast('Select some text first.');
-        else this.openAndAsk(selected, '');
+        else this.openAndAsk(selected, '').catch((error) => this.toast(error.message));
         sendResponse?.({ ok: true });
       } else if (message?.type === 'SCHOLIA_EXPLAIN_TEXT') {
         if (this.siteDisabled()) { sendResponse?.({ ok: true }); return; }
         const selected = currentSelectionCapture(message.text);
-        if (selected) this.openAndAsk(selected, '');
+        if (selected) this.openAndAsk(selected, '').catch((error) => this.toast(error.message));
         sendResponse?.({ ok: true });
       } else if (message?.type === 'SCHOLIA_START_CAPTURE') {
         if (this.siteDisabled()) { this.toast(this.siteDisabledMessage()); sendResponse?.({ ok: true }); return; }
         this.startCapture(false);
         sendResponse?.({ ok: true });
+      } else if (message?.type === 'SCHOLIA_GET_PAGE_CONTEXT') {
+        if (this.siteDisabled()) {
+          sendResponse?.({ ok: false, error: this.siteDisabledMessage() });
+          return;
+        }
+        resolvedPageMetadata().then((metadata) => {
+          const context = this.settings?.includePageContext !== false
+            ? packPageContext(metadata.context, {
+              outline: metadata.outline,
+              selection: String(message.selection || ''),
+              question: String(message.question || '')
+            })
+            : '';
+          sendResponse?.({
+            ok: true,
+            value: {
+              ...metadata,
+              context,
+              outline: '',
+              rawContextCharacters: metadata.context.length,
+              packedContextCharacters: context.length
+            }
+          });
+        }).catch((error) => {
+          sendResponse?.({ ok: false, error: error?.message || 'Scholia could not read this page.' });
+        });
+        return true;
+      } else if (message?.type === 'SCHOLIA_GET_SITE_CONTEXT') {
+        if (this.siteDisabled()) {
+          sendResponse?.({ ok: false, error: this.siteDisabledMessage() });
+          return;
+        }
+        this.getSiteContext({
+          question: String(message.question || ''),
+          selection: String(message.selection || '')
+        }).then((value) => {
+          sendResponse?.({ ok: true, value });
+        }).catch((error) => {
+          sendResponse?.({ ok: false, error: error?.message || 'Scholia could not read this site.' });
+        });
+        return true;
       }
+      return undefined;
     });
 
     chrome.storage.onChanged.addListener((_changes, area) => {
       if (area === 'local') this.refreshSettings();
     });
+  }
+
+  async getSiteContext({ question = '', selection = '' } = {}) {
+    const currentUrl = new URL(location.href);
+    if (!['http:', 'https:'].includes(currentUrl.protocol)) {
+      throw new Error('Entire-site context is available only on ordinary HTTP and HTTPS sites.');
+    }
+    const metadata = await resolvedPageMetadata();
+    const cacheKey = currentUrl.origin;
+    let cached = this.siteContextCache.get(cacheKey);
+    if (!cached || Date.now() - cached.createdAt > 10 * 60_000) {
+      const crawl = await crawlSite({
+        startUrl: currentUrl.href,
+        initialPage: {
+          url: currentUrl.href,
+          title: metadata.pageTitle,
+          text: metadata.context,
+          links: siteLinksFromDocument(document, currentUrl.href)
+        }
+      });
+      if (!crawl.pages.length) throw new Error('No readable pages were found on this site.');
+      cached = { createdAt: Date.now(), crawl };
+      this.siteContextCache.set(cacheKey, cached);
+    }
+
+    const { crawl } = cached;
+    const context = packSiteContext(crawl.pages, {
+      question,
+      selection,
+      discoveredPages: crawl.discoveredPages,
+      truncated: crawl.truncated
+    });
+    return {
+      ...metadata,
+      sourceKind: 'site',
+      context,
+      outline: '',
+      rawContextCharacters: crawl.totalCharacters,
+      packedContextCharacters: context.length,
+      sitePageCount: crawl.pages.length,
+      siteDiscoveredPages: crawl.discoveredPages,
+      siteFailedPages: crawl.failedPages,
+      siteTruncated: crawl.truncated,
+      contextNotice: `Site-wide context from ${currentUrl.hostname}`
+    };
   }
 
   async refreshSettings() {
@@ -289,13 +406,29 @@ class ScholiaContent {
       : 'Scholia is disabled on this site. Re-enable it from the extension panel.';
   }
 
+  liveSelection() {
+    let shadowSelection = null;
+    try { shadowSelection = this.shadow.getSelection?.() || null; } catch {}
+    if (shadowSelection && !shadowSelection.isCollapsed && shadowSelection.rangeCount) return shadowSelection;
+    return window.getSelection();
+  }
+
+  clearLiveSelection() {
+    const selections = new Set();
+    try { selections.add(window.getSelection()); } catch {}
+    try { selections.add(this.shadow.getSelection?.()); } catch {}
+    for (const selection of selections) {
+      try { selection?.removeAllRanges(); } catch {}
+    }
+  }
+
   populateModels() {
     const select = this.els.model;
     const selectedProvider = this.settings?.provider || 'openai';
     const selectedModel = this.settings?.models?.[selectedProvider] || providerById(selectedProvider).defaultModel;
     select.textContent = '';
     for (const provider of PROVIDERS) {
-      const group = document.createElement('optgroup');
+      const group = createHtmlElement('optgroup');
       const configured = this.settings?.configuredProviders?.includes(provider.id);
       group.label = `${configured ? '●' : '○'} ${provider.name}`;
       const models = new Map();
@@ -304,7 +437,7 @@ class ScholiaContent {
         if (id && !models.has(id)) models.set(id, modelLabel(entry));
       }
       for (const [model, label] of models) {
-        const option = document.createElement('option');
+        const option = createHtmlElement('option');
         option.value = `${provider.id}::${model}`;
         option.textContent = label;
         option.selected = provider.id === selectedProvider && model === selectedModel;
@@ -339,7 +472,7 @@ class ScholiaContent {
       const selected = reasoning.efforts.includes(current) ? current : reasoning.default;
       this.els.effort.textContent = '';
       for (const effort of reasoning.efforts) {
-        const option = document.createElement('option');
+        const option = createHtmlElement('option');
         option.value = effort;
         option.textContent = effort;
         option.selected = effort === selected;
@@ -391,7 +524,7 @@ class ScholiaContent {
   startBridge() {
     const status = this.bridgeStatus;
     if (!status?.startUrl) { this.refreshBridgeStatus(true); return; }
-    const frame = document.createElement('iframe');
+    const frame = createHtmlElement('iframe');
     frame.hidden = true;
     frame.src = status.startUrl;
     document.documentElement.append(frame);
@@ -441,7 +574,9 @@ class ScholiaContent {
       packedContext: pageCapture?.packedContext,
       parentContext: packParentContext({
         ancestorContext: pageCapture?.parentContext,
-        messages: Number.isInteger(messageIndex) ? this.messages.slice(0, messageIndex) : this.messages,
+        messages: Number.isInteger(messageIndex)
+          ? this.messages.filter((_message, index) => index !== messageIndex)
+          : this.messages,
         response: response || '',
         selection: capture.selection
       }),
@@ -450,16 +585,22 @@ class ScholiaContent {
   }
 
   inspectSelection() {
-    if (!this.settings?.explainOnSelection || this.siteDisabled() || this.popoverInteracting) return;
-    const live = window.getSelection();
+    if (!this.settings || this.siteDisabled() || this.popoverInteracting) return;
+    const live = this.liveSelection();
     const selectedNode = live?.anchorNode?.nodeType === Node.ELEMENT_NODE ? live.anchorNode : live?.anchorNode?.parentElement;
-    if (selectedNode && this.shadow.contains(selectedNode) && !selectedNode.closest?.('.scholia-message--assistant .scholia-bubble')) return;
-    const selected = currentSelectionCapture();
+    const selectedInsideResponse = Boolean(selectedNode
+      && this.shadow.contains(selectedNode)
+      && selectedNode.closest?.('.scholia-message--assistant .scholia-bubble'));
+    if (selectedNode && this.shadow.contains(selectedNode) && !selectedInsideResponse) return;
+    const selected = currentSelectionCapture('', live);
     if (!selected) {
+      if (!selectedNode || !this.shadow.contains(selectedNode)) this.lastPublishedSelection = '';
       if (!this.els.backdrop.hidden) { this.hidePill(true); return; }
       if (!this.mathState && !this.multiSelection.length && !this.els.pill.contains(this.shadow.activeElement)) this.hidePill(false);
       return;
     }
+    if (!selectedInsideResponse) this.publishPageSelection(selected);
+    if (!this.settings.explainOnSelection) return;
     this.mathState = null;
     this.multiSelection = [];
     this.multiAddMode = false;
@@ -467,6 +608,18 @@ class ScholiaContent {
     this.pendingCapture = this.decorateRecursiveCapture(selected, selectedNode);
     this.paintRangeHighlight(this.pendingCapture.range);
     this.showPill(this.pendingCapture.rect);
+  }
+
+  publishPageSelection(capture) {
+    const selection = String(capture?.selection || '').trim();
+    const signature = `${capture?.kind || 'text'}:${selection}`;
+    if (!selection || signature === this.lastPublishedSelection) return;
+    this.lastPublishedSelection = signature;
+    extensionMessage({
+      type: 'SCHOLIA_PAGE_SELECTION_CHANGED',
+      selection,
+      kind: capture?.kind || 'text'
+    }).catch(() => {});
   }
 
   showPill(rect) {
@@ -477,17 +630,29 @@ class ScholiaContent {
     this.els.pillPreview.textContent = collapseWhitespace(capture.preview || capture.selection).slice(0, 220);
     this.els.mathTools.hidden = !this.mathState?.chain?.length || this.multiSelection.length > 1;
     this.updateAddSymbolButton();
+
+    const wasVisible = pill.classList.contains('is-visible');
     pill.hidden = false;
-    const width = Math.min(380, window.innerWidth - 20);
-    const estimatedHeight = this.els.mathTools.hidden ? 96 : 128;
+    const viewportPadding = 8;
+    const gap = 8;
+    const width = pill.offsetWidth;
+    const height = pill.offsetHeight;
     const anchor = rect || { left: window.innerWidth / 2, right: window.innerWidth / 2, top: window.innerHeight / 2, bottom: window.innerHeight / 2, width: 0 };
-    let left = anchor.left + (anchor.width || 0) / 2 - width / 2;
-    left = Math.max(10, Math.min(window.innerWidth - width - 10, left));
-    let top = anchor.bottom + 8;
-    if (top + estimatedHeight > window.innerHeight - 10) top = Math.max(10, anchor.top - estimatedHeight - 8);
+    const anchorCenter = Math.max(viewportPadding, Math.min(window.innerWidth - viewportPadding, anchor.left + (anchor.width || 0) / 2));
+    let left = anchorCenter - width / 2;
+    left = Math.max(viewportPadding, Math.min(window.innerWidth - width - viewportPadding, left));
+
+    const spaceAbove = anchor.top - viewportPadding;
+    const spaceBelow = window.innerHeight - anchor.bottom - viewportPadding;
+    const placeAbove = spaceBelow < height + gap && spaceAbove > spaceBelow;
+    let top = placeAbove ? anchor.top - height - gap : anchor.bottom + gap;
+    top = Math.max(viewportPadding, Math.min(window.innerHeight - height - viewportPadding, top));
+
+    pill.dataset.placement = placeAbove ? 'above' : 'below';
+    pill.style.setProperty('--scholia-pill-pointer-x', `${Math.max(16, Math.min(width - 16, anchorCenter - left))}px`);
     pill.style.left = `${left}px`;
     pill.style.top = `${top}px`;
-    requestAnimationFrame(() => pill.classList.add('is-visible'));
+    if (!wasVisible) requestAnimationFrame(() => pill.classList.add('is-visible'));
   }
 
   hidePill(keepHighlight = false) {
@@ -515,12 +680,12 @@ class ScholiaContent {
     this.highlightElements = [];
   }
 
-  paintRects(rects) {
+  paintRects(rects, variant = 'math') {
     this.clearHighlights();
     for (const rect of rects) {
       if (!rect || (!rect.width && !rect.height)) continue;
-      const element = document.createElement('div');
-      element.className = 'scholia-highlight';
+      const element = createHtmlElement('div');
+      element.className = `scholia-highlight scholia-highlight--${variant}`;
       Object.assign(element.style, {
         left: `${rect.left}px`, top: `${rect.top}px`, width: `${rect.width}px`, height: `${rect.height}px`
       });
@@ -530,7 +695,7 @@ class ScholiaContent {
   }
 
   paintRangeHighlight(range) {
-    try { this.paintRects([...range.getClientRects()]); } catch { this.clearHighlights(); }
+    try { this.paintRects([...range.getClientRects()], 'text'); } catch { this.clearHighlights(); }
   }
 
   paintMathNodes(nodes) {
@@ -640,11 +805,11 @@ class ScholiaContent {
       if (!chain.length) return;
       event.preventDefault();
       event.stopPropagation();
-      try { window.getSelection()?.removeAllRanges(); } catch {}
+      this.clearLiveSelection();
       this.toggleMultiSymbol(container, chain[0]);
       return;
     }
-    const selection = window.getSelection();
+    const selection = this.liveSelection();
     if (selection && !selection.isCollapsed) return;
     if (event.altKey) {
       const chain = chainAtPoint(container, event.target, event.clientX, event.clientY);
@@ -737,19 +902,33 @@ class ScholiaContent {
     document.addEventListener('touchcancel', cancel, { passive: true, capture: true });
   }
 
-  explainPill() {
+  async explainPill() {
     if (!this.pendingCapture) return;
     const capture = this.pendingCapture;
     const question = this.els.pillQuestion.value.trim();
     this.els.pillQuestion.value = '';
-    this.openAndAsk(capture, question);
+    const previousLabel = this.els.pillSend.textContent;
+    this.els.pillSend.disabled = true;
+    this.els.pillSend.textContent = document.documentElement.dataset.scholiaPdfViewer === 'true' ? 'Reading PDF…' : 'Opening…';
+    try {
+      await this.openAndAsk(capture, question);
+    } catch (error) {
+      this.toast(error?.message || 'Scholia could not read this document.');
+    } finally {
+      this.els.pillSend.disabled = false;
+      this.els.pillSend.textContent = previousLabel;
+    }
   }
 
-  openAndAsk(capture, question) {
+  async openAndAsk(capture, question) {
     const recursive = capture.recursive === true && !this.els.backdrop.hidden && this.layers.length > 0;
-    if (!recursive && capture.context === undefined) capture = { ...pageMetadata(), ...capture };
+    if (!recursive && capture.context === undefined) capture = { ...await resolvedPageMetadata(), ...capture };
     if (recursive && this.streaming) this.cancelRequest();
-    if (this.layers.length) this.layers.at(-1).scrollTop = this.els.messages.scrollTop;
+    if (this.layers.length) {
+      const currentLayer = this.layers.at(-1);
+      currentLayer.scrollTop = this.els.messages.scrollTop;
+      if (recursive) currentLayer.panel = this.snapshotActivePanel();
+    }
     this.hidePill(!recursive);
     this.pendingCapture = null;
     if (!recursive) this.layers = [];
@@ -763,7 +942,7 @@ class ScholiaContent {
     this.els.composer.placeholder = capture.kind === 'image' ? 'Ask about the captured region…' : 'Ask a follow-up…';
     this.els.backdrop.hidden = false;
     this.updateModelControls();
-    try { window.getSelection()?.removeAllRanges(); } catch {}
+    this.clearLiveSelection();
     this.ask(question || (capture.kind === 'image' ? 'Explain what is shown in this region.' : 'Explain this.'));
   }
 
@@ -771,9 +950,13 @@ class ScholiaContent {
     const capture = this.capture;
     if (!capture) { this.els.source.hidden = true; return; }
     this.els.source.hidden = false;
-    this.els.sourceLabel.textContent = capture.recursive
-      ? capture.kind === 'latex' ? 'Mathematics selected from an explanation' : 'Selected from an explanation'
-      : capture.kind === 'image' ? 'Captured region' : capture.kind === 'latex' ? 'Selected mathematics' : 'Selected text';
+    this.els.sourceLabel.textContent = capture.imageOrigin === 'pasted'
+      ? 'Pasted image'
+      : capture.imageOrigin === 'selected'
+        ? 'Selected image'
+        : capture.recursive
+          ? capture.kind === 'latex' ? 'Mathematics selected from an explanation' : 'Selected from an explanation'
+          : capture.kind === 'image' ? 'Captured region' : capture.kind === 'latex' ? 'Selected mathematics' : 'Selected text';
     this.els.sourceText.textContent = capture.kind === 'image' ? (capture.pageTitle || 'Visible page region') : capture.selection;
     this.els.sourceImage.hidden = !capture.imageDataUrl;
     if (capture.imageDataUrl) this.els.sourceImage.src = capture.imageDataUrl;
@@ -784,21 +967,32 @@ class ScholiaContent {
     this.els.layerStack.textContent = '';
     const behind = this.layers.slice(0, -1).slice(-4);
     behind.forEach((layer, index) => {
-      const card = document.createElement('div');
       const depth = behind.length - index;
-      card.className = 'scholia-layer-card';
-      card.style.setProperty('--scholia-layer-offset', `${depth * -12}px`);
-      card.style.setProperty('--scholia-layer-scale', String(1 - depth * 0.012));
-      card.style.setProperty('--scholia-layer-opacity', String(1 - depth * 0.08));
-      const label = document.createElement('span');
-      label.textContent = collapseWhitespace(layer.capture?.preview || layer.capture?.selection || 'Earlier explanation').slice(0, 72);
-      card.append(label);
-      this.els.layerStack.append(card);
+      const panel = layer.panel;
+      if (!panel) return;
+      panel.style.setProperty('--scholia-layer-offset', `${depth * -12}px`);
+      panel.style.setProperty('--scholia-layer-scale', String(1 - depth * 0.012));
+      panel.style.setProperty('--scholia-layer-opacity', String(1 - depth * 0.08));
+      panel.style.zIndex = String(index + 1);
+      this.els.layerStack.append(panel);
+      const messages = panel.querySelector('.scholia-messages');
+      if (messages) messages.scrollTop = layer.scrollTop;
     });
     const layered = this.layers.length > 1;
     this.els.close.textContent = layered ? '←' : '×';
     this.els.close.title = layered ? 'Back to previous explanation' : 'Close';
     this.els.close.setAttribute('aria-label', this.els.close.title);
+  }
+
+  snapshotActivePanel() {
+    const panel = this.els.modal.cloneNode(true);
+    panel.classList.add('scholia-modal--layer');
+    panel.removeAttribute('data-modal');
+    panel.removeAttribute('role');
+    panel.removeAttribute('aria-modal');
+    panel.setAttribute('aria-hidden', 'true');
+    panel.setAttribute('inert', '');
+    return panel;
   }
 
   closeTopLayer() {
@@ -818,7 +1012,7 @@ class ScholiaContent {
     this.els.messages.scrollTop = layer.scrollTop;
     this.renderLayerStack();
     this.updateModelControls();
-    try { window.getSelection()?.removeAllRanges(); } catch {}
+    this.clearLiveSelection();
     this.els.close.focus();
   }
 
@@ -832,6 +1026,67 @@ class ScholiaContent {
     this.renderLayerStack();
     this.els.bridgeBar.hidden = true;
     clearInterval(this.bridgeWatchTimer);
+  }
+
+  openImagePicker(question = '') {
+    this.imageQuestionDraft = String(question || '');
+    this.els.imageFile.click();
+  }
+
+  handleImagePaste(event) {
+    const file = clipboardImageFile(event.clipboardData);
+    if (!file) return;
+    event.preventDefault();
+    this.useImageFile(file, { question: event.currentTarget?.value || '', pasted: true })
+      .catch((error) => this.toast(error.message || 'Could not read that image.'));
+  }
+
+  async useImageFile(file, { question = '', pasted = false } = {}) {
+    if (!file) return;
+    const imageDataUrl = await normalizeImageFile(file);
+    const metadata = await resolvedPageMetadata();
+    const label = pasted ? 'Pasted image' : String(file.name || 'Selected image');
+    const nextCapture = {
+      kind: 'image',
+      imageOrigin: pasted ? 'pasted' : 'selected',
+      selection: '',
+      preview: label,
+      pageTitle: label,
+      pageLanguage: metadata.pageLanguage || navigator.language,
+      url: '',
+      context: '',
+      outline: [],
+      imageDataUrl
+    };
+    this.showImageDraft(nextCapture, question);
+  }
+
+  showImageDraft(nextCapture, question = '') {
+    if (this.streaming) this.cancelRequest();
+    const replaceCurrent = !this.els.backdrop.hidden && this.layers.length > 0;
+    this.hidePill(false);
+    if (replaceCurrent) {
+      this.messages.splice(0);
+      const layer = this.layers.at(-1);
+      layer.capture = nextCapture;
+      layer.messages = this.messages;
+    } else {
+      this.layers = [];
+      this.messages = [];
+      this.layers.push({ capture: nextCapture, messages: this.messages, scrollTop: 0 });
+    }
+    this.capture = nextCapture;
+    this.renderSource();
+    this.renderMessages();
+    this.renderLayerStack();
+    this.els.composer.value = String(question || '');
+    this.els.composer.placeholder = 'Ask about this image…';
+    this.resizeComposer();
+    this.els.backdrop.hidden = false;
+    this.updateModelControls();
+    this.clearLiveSelection();
+    this.els.composer.focus();
+    this.toast('Image ready. Add a question and send.');
   }
 
   sendComposer() {
@@ -969,15 +1224,15 @@ class ScholiaContent {
     }
     list.textContent = '';
     for (const [index, message] of this.messages.entries()) {
-      const row = document.createElement('article');
+      const row = createHtmlElement('article');
       row.className = `scholia-message scholia-message--${message.role}${message.error ? ' scholia-message--error' : ''}`;
       row.dataset.messageIndex = String(index);
-      const bubble = document.createElement('div');
+      const bubble = createHtmlElement('div');
       bubble.className = 'scholia-bubble';
       if (message.role === 'assistant' && !message.error) bubble.innerHTML = renderMarkdown(message.content) + (message.streaming ? '<span class="scholia-caret" aria-label="Writing"></span>' : '');
       else bubble.textContent = message.content;
       if (message.meta) {
-        const meta = document.createElement('div');
+        const meta = createHtmlElement('div');
         meta.className = 'scholia-meta';
         meta.textContent = message.meta;
         bubble.append(meta);
@@ -1071,7 +1326,7 @@ class ScholiaContent {
       const imageDataUrl = await cropScreenshot(screenshot, rect);
       const nextCapture = {
         kind: 'image', selection: '', preview: 'Captured screen region',
-        ...pageMetadata(), imageDataUrl, rect
+        ...await resolvedPageMetadata(), imageDataUrl, rect
       };
       if (this.captureForConversation) {
         this.capture = nextCapture;
@@ -1088,7 +1343,7 @@ class ScholiaContent {
         this.els.composer.placeholder = 'Ask about the captured region…';
         this.els.composer.focus();
       } else {
-        this.openAndAsk(nextCapture, 'Explain what is shown in this region.');
+        await this.openAndAsk(nextCapture, 'Explain what is shown in this region.');
       }
     } catch (error) {
       this.toast(error.message || 'Could not capture this region.');

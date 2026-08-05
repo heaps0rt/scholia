@@ -1,74 +1,123 @@
-# Privacy and security model
+# Scholia privacy policy
 
-Scholia has no hosted relay, analytics, or telemetry in this repository.
+**Effective date:** 5 August 2026
 
-## Data that can leave the device
+Scholia explains material that you choose from a web page, PDF, screenshot, or
+image. The project does not operate a server and does not include analytics,
+advertising, or telemetry. Data is processed on your device and, when you ask a
+question, sent directly to the AI provider or endpoint you configured.
 
-Only after a user gesture, the configured AI provider may receive:
+## Data Scholia handles
 
-- the selected text or mathematical expression;
-- the user's question and prior turns in the open Scholia conversation;
-- when explaining text selected inside an answer, the parent answer, its recent
-  conversation, and a compact trace of earlier explanation layers;
-- the full rendered page text for short pages, or a locally produced outline
-  and relevant excerpts for long pages, when **Use page-wide reference
-  context** is enabled;
-- the selected screenshot region, for a vision-capable provider;
-- the page title and URL without query parameters or fragments, as source
-  context.
+Depending on the feature you use, Scholia may handle:
 
-The provider's own data policy then applies. Local Ollama and loopback bridges
-keep browser-to-runtime traffic on the configured local endpoint. Codex CLI,
-Claude Code, and opencode may themselves contact the model service associated
-with the user's local login.
+- selected text or mathematical notation;
+- your question, recent conversation turns, and selected answer text used for a
+  follow-up explanation;
+- the title and address of the current page, with URL query parameters and
+  fragments removed before provider submission;
+- rendered page text, locally built headings, and relevant excerpts when
+  page-wide context is enabled;
+- same-origin page text when you explicitly enable **Entire site** for a
+  question;
+- PDF text and page numbers extracted locally from a document you opened or
+  chose;
+- a visible-tab region, visible-page fallback, or image you explicitly chose or
+  pasted;
+- provider, model, language, endpoint, and per-site access settings;
+- provider API keys or local-endpoint credentials; and
+- the current site's hostname when you add it to an allowlist or blocklist.
 
-## Chrome credential boundary
+Scholia does not read Chrome browsing history, cookies, form history, contacts,
+location, or financial information.
 
-API keys are stored in `chrome.storage.local` and read by the service worker.
-They are not sent to content scripts, inserted into page DOM, or stored in a
-site's localStorage. Chrome extension storage is still not an OS keychain; use
-a dedicated, revocable key with a spending limit.
+## How data is used
 
-The extension needs broad host access because its core purpose is to work on
-arbitrary pages and because `captureVisibleTab` requires host access (or a
-temporary `activeTab` grant). Scholia does not perform passive browsing-history
-collection or background screenshots.
+Data is used only to provide the explanation or contextual conversation you
+request, remember your extension settings, enforce your site access choices,
+and keep an active conversation grounded in the source you chose.
 
-Website policy stores only hostnames (for example `example.org`) in
-extension-local blocked or allowed lists. The default policy runs everywhere
-except blocked sites; allowlist mode keeps Scholia inactive everywhere except
-explicitly allowed sites. The toolbar panel remains available to change the
-current site's status.
+Long pages, sites, and PDFs are indexed on the device. The extension sends a
+bounded context pack rather than the complete local index. Screenshots and
+chosen images are resized on the device before submission.
 
-## Capture guarantees
+## When data leaves the device
 
-- The selected excerpt is read only from the current explicit selection.
-- When page context is enabled, rendered page text is read after the user asks
-  for an explanation and packed locally before submission.
-- A screenshot is requested only after the user starts region-capture mode and
-  finishes a drag.
-- Only the selected rectangle is retained by the popup and sent to the chosen
-  provider.
-- Capture overlays are removed for two animation frames before Chrome takes the
-  image.
-- Images are down-sampled to a maximum edge of 1800 pixels before submission.
+Scholia sends a provider request only after an explicit action such as asking a
+question, choosing **Explain**, starting a capture, or submitting a follow-up.
+That request goes directly to the provider or compatible endpoint selected in
+Settings. Supported hosted choices include Anthropic, OpenAI, OpenRouter, Groq,
+Together AI, Mistral AI, and Cohere. You can instead choose Ollama, a local CLI
+bridge, opencode, or a custom compatible endpoint.
 
-## Content safety
+The selected provider receives the question and the source material required
+for that explanation. An API key is sent only to its configured endpoint for
+authentication. The provider's own privacy policy, retention settings, and
+service terms apply. Local CLI tools may contact the model service associated
+with your local login.
 
-Web-page context is placed inside explicit reference delimiters and the system
-prompt tells the model never to treat it as instructions. Model Markdown is
-HTML-escaped. The renderer supports a small formatting subset and invokes
-KaTeX with trusted commands disabled.
+The Scholia project does not receive, sell, rent, or use this data for
+advertising, profiling, creditworthiness, or model training. It does not allow
+project maintainers or other humans to read your content.
 
-Long-page ranking is deterministic and runs inside the content script. It does
-not make a separate model request: the complete page is considered locally,
-while only the bounded context pack leaves the browser.
+## Storage and retention
 
-These measures reduce prompt-injection and rendering risk; they cannot make an
-untrusted model or provider infallible. Scholia should not be used as the sole
-authority for medical, legal, financial, or safety-critical decisions.
+Provider settings, API keys, and site access rules are stored in
+`chrome.storage.local` until you change them, clear the extension's data, or
+uninstall Scholia. Chrome extension storage is not an operating-system
+keychain; use a dedicated, revocable provider key with a spending limit.
 
-## macOS
+The latest page selection may be placed in `chrome.storage.session` for up to
+ten minutes so the side panel can receive it. It is scoped to the originating
+tab and removed when submitted or cleared. Conversations stay in extension
+memory while their UI is open. A same-site crawl stays in content-script memory
+for up to ten minutes. Session data disappears when the browser session ends.
 
-The native app will use Keychain for keys and request Accessibility and Screen
-Recording permissions separately, at the moment each capability is invoked.
+Scholia has no account database or backend copy to retain or delete. Uninstall
+the extension or clear its extension data in Chrome to remove locally stored
+settings. Provider-side deletion requests must be made to the provider you
+selected.
+
+## Browser access and user controls
+
+Scholia requests access to websites because its single purpose is to explain
+content on the page you are reading. It uses that access for selection UI,
+explicit page context, user-initiated PDF reading, explicit same-site context,
+and visible-tab capture. It does not passively collect a browsing history or
+take background screenshots.
+
+You can disable Scholia on individual sites or switch to allowlist mode, which
+keeps it inactive everywhere except the hostnames you approve. Site-wide
+reading is off until you enable **Entire site** for a question. Page-wide
+context can also be disabled in Settings.
+
+## Security
+
+Hosted provider traffic uses HTTPS. Unencrypted HTTP is allowed only for
+loopback endpoints on the same device. Provider credentials remain in
+extension-owned settings and service-worker contexts; they are never inserted
+into page content or sent to content scripts.
+
+Model output is HTML-escaped before a small Markdown and KaTeX subset is
+rendered. Remote executable code is not loaded. These measures reduce risk but
+cannot make an external provider, model response, or untrusted page infallible.
+Do not use Scholia as the sole authority for safety-critical decisions.
+
+## Children
+
+Scholia is a general-purpose reading tool and is not directed to children under
+13. The project does not knowingly collect personal information from children.
+
+## Limited Use
+
+Scholia's use of information received from Google APIs adheres to the Chrome Web
+Store User Data Policy, including the Limited Use requirements. Data access is
+limited to providing the extension's user-facing explanation features.
+
+## Changes and contact
+
+Material changes to this policy will be dated here and disclosed with the
+corresponding extension update. Questions may be opened in the repository's
+[issue tracker](https://github.com/heaps0rt/scholia/issues). Report security or
+sensitive privacy problems privately through
+[GitHub Security Advisories](https://github.com/heaps0rt/scholia/security/advisories/new).

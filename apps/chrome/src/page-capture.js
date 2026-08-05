@@ -1,3 +1,5 @@
+import { createHtmlElement } from './html-elements.js';
+
 const MAX_SELECTION_LENGTH = 12_000;
 const MAX_IMAGE_EDGE = 1_800;
 
@@ -13,6 +15,11 @@ export function collapseWhitespace(value) {
   return String(value || '').replace(/\s+/g, ' ').trim();
 }
 
+function embeddedSourceUrl() {
+  if (document.documentElement?.dataset?.scholiaPdfViewer !== 'true') return '';
+  return String(document.documentElement.dataset.scholiaSourceUrl || '');
+}
+
 function normalizePageText(value) {
   return String(value || '')
     .replace(/\r\n?/g, '\n')
@@ -24,7 +31,7 @@ function normalizePageText(value) {
 
 export function sourceUrl() {
   try {
-    const url = new URL(location.href);
+    const url = new URL(embeddedSourceUrl() || location.href);
     if (url.protocol !== 'http:' && url.protocol !== 'https:') return url.protocol;
     url.username = '';
     url.password = '';
@@ -37,11 +44,11 @@ export function sourceUrl() {
 }
 
 export function currentSiteKey() {
-  if (location.protocol === 'http:' || location.protocol === 'https:') {
-    return location.hostname.toLowerCase();
-  }
-  if (location.protocol === 'file:') return 'file://';
-  return location.protocol.toLowerCase();
+  let url;
+  try { url = new URL(embeddedSourceUrl() || location.href); } catch { return location.protocol.toLowerCase(); }
+  if (url.protocol === 'http:' || url.protocol === 'https:') return url.hostname.toLowerCase();
+  if (url.protocol === 'file:') return 'file://';
+  return url.protocol.toLowerCase();
 }
 
 function isEditable(node) {
@@ -259,8 +266,23 @@ export function pageMetadata() {
   };
 }
 
-export function currentSelectionCapture(forcedText = '') {
-  const selection = window.getSelection();
+export async function resolvedPageMetadata() {
+  const resolver = document.documentElement?.dataset?.scholiaPdfViewer === 'true'
+    ? globalThis.__scholiaGetPageMetadata
+    : null;
+  if (typeof resolver !== 'function') return pageMetadata();
+  const metadata = await resolver();
+  return {
+    context: String(metadata?.context || ''),
+    outline: String(metadata?.outline || ''),
+    pageTitle: String(metadata?.pageTitle || document.title),
+    url: String(metadata?.url || sourceUrl()),
+    pageLanguage: String(metadata?.pageLanguage || document.documentElement.lang || navigator.language),
+    imageDataUrl: String(metadata?.imageDataUrl || '')
+  };
+}
+
+export function currentSelectionCapture(forcedText = '', selection = window.getSelection()) {
   const forcedSelection = collapseWhitespace(forcedText);
   if (forcedSelection) {
     return {
@@ -275,7 +297,7 @@ export function currentSelectionCapture(forcedText = '') {
 
   const range = selection.getRangeAt(0);
   const text = selectionTextWithMath(range, selection);
-  if (text.length < 2) return null;
+  if (!text) return null;
   return {
     kind: /\$[^$]+\$/.test(text) ? 'latex' : 'text',
     selection: text.slice(0, MAX_SELECTION_LENGTH),
@@ -303,7 +325,7 @@ export function cropScreenshot(dataUrl, rect) {
           Math.max(1, Math.round(rect.height * scaleY))
         );
         const outputScale = Math.min(1, MAX_IMAGE_EDGE / Math.max(sourceWidth, sourceHeight));
-        const canvas = document.createElement('canvas');
+        const canvas = createHtmlElement('canvas');
         canvas.width = Math.max(1, Math.round(sourceWidth * outputScale));
         canvas.height = Math.max(1, Math.round(sourceHeight * outputScale));
         const context = canvas.getContext('2d');

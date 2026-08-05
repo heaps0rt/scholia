@@ -3,7 +3,7 @@ const DEFAULT_PROVIDER_ID = 'openai';
 const SITE_ACCESS_MODES = new Set(['blocklist', 'allowlist']);
 
 const CLAUDE_REASONING_EFFORTS = Object.freeze(['low', 'medium', 'high', 'xhigh', 'max']);
-const CODEX_REASONING_EFFORTS = Object.freeze(['minimal', 'low', 'medium', 'high', 'xhigh']);
+const CODEX_REASONING_EFFORTS = Object.freeze(['minimal', 'low', 'medium', 'high', 'xhigh', 'max']);
 
 function reasoningModel(id, label, efforts, defaultEffort) {
   return { id, label, reasoning: { efforts, default: defaultEffort } };
@@ -119,6 +119,7 @@ export const PROVIDERS = Object.freeze([
     keyHint: 'Optional bridge bearer token',
     supportsImages: false,
     imageCapability: 'bridge-health',
+    imageUnavailableMessage: 'Restart the Claude Code bridge with --allow-images to send image attachments.',
     defaultModel: 'sonnet',
     models: [
       reasoningModel('fable', 'Fable 5 (Claude Code)', CLAUDE_REASONING_EFFORTS, 'high'),
@@ -146,12 +147,14 @@ export const PROVIDERS = Object.freeze([
     keyRequired: false,
     keyHint: 'Optional bridge bearer token',
     supportsImages: false,
+    imageCapability: 'bridge-health',
+    imageUnavailableMessage: 'Restart the Codex bridge to enable image attachments.',
     defaultModel: 'gpt-5.5',
     models: [
       reasoningModel('gpt-5.5', 'GPT-5.5', CODEX_REASONING_EFFORTS, 'high'),
       reasoningModel('gpt-5.6-sol', 'GPT-5.6 Sol', ['low', 'medium', 'high', 'xhigh', 'max', 'ultra'], 'medium'),
       reasoningModel('gpt-5.6-terra', 'GPT-5.6 Terra', CODEX_REASONING_EFFORTS, 'high'),
-      reasoningModel('gpt-5.6-luna', 'GPT-5.6 Luna', ['minimal', 'low', 'medium', 'high'], 'medium'),
+      reasoningModel('gpt-5.6-luna', 'GPT-5.6 Luna', ['minimal', 'low', 'medium', 'high', 'max'], 'medium'),
       reasoningModel('gpt-5.4', 'GPT-5.4', CODEX_REASONING_EFFORTS, 'high'),
       reasoningModel('gpt-5.4-mini', 'GPT-5.4 Mini', ['minimal', 'low', 'medium', 'high'], 'medium')
     ],
