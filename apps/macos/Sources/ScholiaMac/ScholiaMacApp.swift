@@ -1,78 +1,82 @@
+@preconcurrency import AppKit
 import SwiftUI
 
 @main
 struct ScholiaMacApp: App {
-    @StateObject private var model = AppModel()
+    @NSApplicationDelegateAdaptor(ScholiaAppDelegate.self) private var appDelegate
+    @StateObject private var model = AppModel.shared
 
     var body: some Scene {
         MenuBarExtra {
-            MenuContent()
-                .environmentObject(model)
-                .frame(width: 320)
+            MenuContent().environmentObject(model).scholiaButtonStyle(.automatic)
         } label: {
-            Image(systemName: "text.magnifyingglass")
-                .accessibilityLabel("Scholia")
+            ZStack {
+                Image(systemName: model.isAnswering ? "ellipsis.bubble" : "text.magnifyingglass")
+                if !model.isAnswering && !model.selectionPillIsEnabledForActiveApplication {
+                    Image(systemName: "slash")
+                        .font(.system(size: 11, weight: .bold))
+                }
+            }
+            .accessibilityLabel(model.menuBarAccessibilityLabel)
         }
         .menuBarExtraStyle(.window)
 
-        Window("Scholia", id: "selection") {
-            SelectionPreview()
-                .environmentObject(model)
-                .frame(minWidth: 480, minHeight: 360)
+        Settings {
+            SettingsView().environmentObject(model).scholiaButtonStyle(.automatic)
         }
-        .defaultSize(width: 620, height: 520)
-
+        .commands {
+            CommandGroup(after: .newItem) {
+                Button("Open Study Workspace", action: model.openStudyWorkspace)
+                    .keyboardShortcut("1", modifiers: .command)
+                Button("Import Study Documents…", action: model.chooseStudyDocuments)
+                    .keyboardShortcut("o", modifiers: .command)
+                Button("Open Scholia in Browser", action: model.openStudyWebsite)
+                    .keyboardShortcut("2", modifiers: .command)
+                Button("Quick Chat", action: model.showQuickAsk)
+            }
+        }
     }
 }
 
-private struct MenuContent: View {
-    @EnvironmentObject private var model: AppModel
-    @Environment(\.openWindow) private var openWindow
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 14) {
-            VStack(alignment: .leading, spacing: 3) {
-                Text("Scholia").font(.system(.title2, design: .serif, weight: .bold))
-                Text("Select anything. Understand it in place.").font(.caption).foregroundStyle(.secondary)
-            }
-
-            Button("Preview selected text", systemImage: "text.cursor") {
-                if model.captureSelectedText() { openWindow(id: "selection") }
-            }
-            .buttonStyle(.borderedProminent)
-
-            if !model.accessibilityGranted {
-                Button("Allow selected-text access") { model.requestAccessibility() }
-            }
-
-            Divider()
-            Text(model.status).font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
-            SettingsLink { Text("Settings…") }
+@MainActor
+final class ScholiaAppDelegate: NSObject, NSApplicationDelegate {
+    func applicationDidFinishLaunching(_ notification: Notification) {
+        NSApp.setActivationPolicy(.accessory)
+        NSApp.servicesProvider = self
+        NSUpdateDynamicServices()
+        AppModel.shared.start()
+        if !CommandLine.arguments.contains("--background") {
+            AppModel.shared.openStudyWorkspace()
         }
-        .padding(16)
     }
-}
 
-private struct SelectionPreview: View {
-    @EnvironmentObject private var model: AppModel
+    func applicationWillTerminate(_ notification: Notification) {
+        AppModel.shared.stop()
+    }
 
-    var body: some View {
-        VStack(alignment: .leading, spacing: 18) {
-            Text("Scholia").font(.system(.largeTitle, design: .serif, weight: .bold))
-            if let request = model.request {
-                Text(request.kind == .latex ? "Selected mathematics" : "Selected text")
-                    .font(.caption.weight(.bold)).textCase(.uppercase).foregroundStyle(.secondary)
-                ScrollView {
-                    Text(request.selection ?? "Captured image")
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .textSelection(.enabled)
-                        .padding()
-                        .background(.quaternary, in: RoundedRectangle(cornerRadius: 12))
-                }
-            } else {
-                ContentUnavailableView("No selection yet", systemImage: "text.cursor", description: Text("Select text in another app from the Scholia menu bar item."))
-            }
+    func application(_ sender: NSApplication, openFiles filenames: [String]) {
+        AppModel.shared.openStudyDocuments(filenames.map { URL(fileURLWithPath: $0) })
+        sender.reply(toOpenOrPrint: .success)
+    }
+
+    func applicationDidBecomeActive(_ notification: Notification) {
+        AppModel.shared.applicationDidBecomeActive()
+    }
+
+    func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
+        AppModel.shared.reopenFromDock()
+        return true
+    }
+
+    @objc func explainWithScholia(
+        _ pasteboard: NSPasteboard,
+        userData: String,
+        error errorPointer: AutoreleasingUnsafeMutablePointer<NSString?>
+    ) {
+        guard let text = pasteboard.string(forType: .string), !text.isEmpty else {
+            errorPointer.pointee = "Scholia did not receive selected text."
+            return
         }
-        .padding(24)
+        AppModel.shared.explainServiceText(text)
     }
 }
