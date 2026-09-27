@@ -216,3 +216,129 @@ test('successful logins retain at most twenty sessions per account', async (t) =
     20
   );
 });
+
+test('failed automatic transfers consume the batch budget and never cross Canvas account ownership', async (t) => {
+  const transfers = [],
+    requests = [];
+  const app = await fixture(t, {
+    canvasHosts: ['canvas.example'],
+    remoteRequest: async (address, options) => {
+      const url = new URL(address);
+      requests.push(url.href);
+      if (url.hostname === 'files.example') {
+        transfers.push(options.limit);
+        throw new Error('Transfer interrupted.');
+      }
+      const id = url.pathname.split('/').at(-1);
+      return {
+        status: 200,
+        headers: {},
+        data: JSON.stringify({
+          id,
+          filename: `input-${id}.nanowire`,
+          url: `https://files.example/${id}`,
+        }),
+      };
+    },
+  });
+  await app.workspaces.action(app.session(), { action: 'create', name: 'Prepared files' });
+  const account = app.workspaces.account(app.user.id),
+    course = account.library.courses[0];
+  Object.assign(account.library, { canvasOrigin: 'https://canvas.example', canvasUserID: 1 });
+  Object.assign(course, { canvasOrigin: 'https://canvas.example', canvasUserID: 1, canvasID: 1 });
+  app.store.credential(account.id, 'canvas:https://canvas.example', 'private-token');
+  const assignment = {
+    id: 'assignments:1',
+    kind: 'assignments',
+    assignment: { linkedFileIDs: ['1', '2', '3', '4'] },
+  };
+  app.workspaces.prepareAssignmentFiles(account, course, assignment);
+  await account.job;
+  assert.deepEqual(transfers, [20_000_000, 20_000_000, 10_000_000]);
+  assert.match(app.workspaces.assignmentNotices(course, assignment)['files:4'], /50 MB/);
+  const before = requests.length;
+  course.canvasUserID = 2;
+  app.workspaces.prepareAssignmentFiles(account, course, assignment);
+  await account.job;
+  assert.equal(
+    requests.length,
+    before,
+    'No request uses a token belonging to another Canvas account'
+  );
+  assert.match(
+    app.workspaces.assignmentNotices(course, assignment)['files:1'],
+    /owns this workspace/
+  );
+});
+
+test('the default PDF respects automatic download limits while explicit attachment opening remains available', async (t) => {
+  const transfers = [];
+  const app = await fixture(t, {
+    canvasHosts: ['canvas.example'],
+    remoteRequest: async (address, options) => {
+      const url = new URL(address);
+      if (url.hostname === 'files.example') {
+        transfers.push(options.limit);
+        return { status: 200, headers: {}, data: Buffer.from('PDF fixture') };
+      }
+      return {
+        status: 200,
+        headers: {},
+        data: JSON.stringify({
+          id: 1,
+          filename: 'large.pdf',
+          size: 21_000_000,
+          updated_at: 'v1',
+          url: 'https://files.example/1',
+        }),
+      };
+    },
+  });
+  await app.workspaces.action(app.session(), { action: 'create', name: 'Large attachment' });
+  const account = app.workspaces.account(app.user.id),
+    course = account.library.courses[0];
+  const assignment = {
+    id: 'assignments:1',
+    kind: 'assignments',
+    title: 'Large PDF',
+    version: 'v1',
+    assignment: { linkedFileIDs: ['1'] },
+  };
+  course.canvasMaterials.push(assignment, {
+    id: 'files:1',
+    kind: 'files',
+    remoteID: '1',
+    fileName: 'large.pdf',
+    title: 'large.pdf',
+    version: 'v1',
+    byteCount: 21_000_000,
+  });
+  course.documents.push({
+    id: randomUUID(),
+    sourceKey: assignment.id,
+    sourceVersion: 'v1',
+    title: 'Instructions',
+    kind: 'text',
+    pageCount: 1,
+  });
+  const state = await app.workspaces.action(app.session(), {
+    action: 'assignment',
+    id: assignment.id,
+    courseID: course.id,
+  });
+  assert.equal(state.library.selectedDocumentID, null);
+  assert.match(state.assignmentFileNotices['files:1'], /20 MB/);
+  assert.equal(account.job, undefined);
+  assert.deepEqual(transfers, []);
+  Object.assign(account.library, { canvasOrigin: 'https://canvas.example', canvasUserID: 1 });
+  Object.assign(course, { canvasOrigin: 'https://canvas.example', canvasUserID: 1, canvasID: 1 });
+  app.store.credential(account.id, 'canvas:https://canvas.example', 'private-token');
+  const selected = await app.workspaces.action(app.session(), {
+    action: 'assignmentFile',
+    courseID: course.id,
+    assignmentID: assignment.id,
+    id: 'files:1',
+  });
+  assert.ok(selected.library.selectedDocumentID);
+  assert.deepEqual(transfers, [100_000_000]);
+});

@@ -222,6 +222,7 @@ final class StudyWebServer {
                 error: workspace.error,
                 context: workspace.contextSummary, includeCourse: workspace.includeCourseContext,
                 assignmentText: workspace.assignmentText, assignmentPDFs: workspace.assignmentPDFs,
+                assignmentFiles: workspace.assignmentFiles, assignmentFileNotices: workspace.assignmentFileNotices,
                 assignmentNotice: workspace.assignmentNotice,
                 draftOwner: workspace.draftOwner, learningRevision: workspace.learning.state.sequence,
                 reviewDue: workspace.learning.state.due().count))
@@ -298,12 +299,12 @@ final class StudyWebServer {
                 let material = course.materials.first(where: { $0.id == command.id && $0.kind == .assignments })
             else { throw StudyError.message("Assignment not found") }
             workspace.openAssignment(material, courseID: courseID)
-        case "assignmentPDF":
+        case "assignmentPDF", "assignmentFile":
             guard workspace.course?.id == (try uuid(command.courseID)),
                 workspace.assignment?.id == command.assignmentID,
-                let id = command.id, workspace.assignmentPDFs.contains(where: { $0.id == id })
-            else { throw StudyError.message("Reopen the assignment before choosing its PDF.") }
-            workspace.openAssignmentPDF(id)
+                let id = command.id, workspace.assignmentFiles.contains(where: { $0.id == id })
+            else { throw StudyError.message("Reopen the assignment before choosing an included file.") }
+            workspace.openAssignmentFile(id)
         case "page":
             try workspace.validateDraftOwner(command.owner)
             workspace.setPage(command.page ?? 1)
@@ -434,6 +435,8 @@ private struct StudyWebState: Encodable {
     var includeCourse: Bool
     var assignmentText: String
     var assignmentPDFs: [CanvasMaterialReference]
+    var assignmentFiles: [CanvasMaterialReference]
+    var assignmentFileNotices: [String: String]
     var assignmentNotice: String?
     var draftOwner: StudyDraftOwner
     var learningRevision: Int

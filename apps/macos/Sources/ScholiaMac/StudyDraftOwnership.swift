@@ -4,6 +4,7 @@ struct StudyDraftOwner: Codable, Equatable, Sendable {
     var courseID: UUID?
     var documentID: UUID?
     var threadID: UUID?
+    var assignmentID: String?
     var page: Int
     var revision: String
 }
@@ -14,7 +15,8 @@ extension StudyWorkspaceModel {
         let content = draft + "\u{0}" + mode.rawValue + "\u{0}" + selectedText
         let revision = StudyDocumentEditing.revision(Data(content.utf8) + (draftImage ?? Data()))
         return StudyDraftOwner(
-            courseID: course?.id, documentID: document?.id, threadID: thread?.id, page: currentPage, revision: revision)
+            courseID: course?.id, documentID: document?.id, threadID: thread?.id,
+            assignmentID: assignment?.id, page: currentPage, revision: revision)
     }
     func validateDraftOwner(_ expected: StudyDraftOwner?) throws {
         guard let expected, expected == draftOwner else {

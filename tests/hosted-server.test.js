@@ -452,3 +452,302 @@ test('Canvas submission mapping and outbound addresses preserve status and crede
     assert.equal(publicAddress(ip), false, ip);
   assert.equal(publicAddress('1.1.1.1'), true);
 });
+
+test('assignment attachments retain context across non-PDF reading, reloads and citations', async (t) => {
+  const downloads = [],
+    completions = [];
+  const bodies = {
+    113: Buffer.from(onePagePdf('Measure the tensile strain and report the stress response.')),
+    116: Buffer.from(
+      'units metal\npair_style eam\nread_data nanowire.data\n' +
+        '# Molecular dynamics input\n'.repeat(40)
+    ),
+    117: Buffer.from('Nickel EAM potential\n28 Ni 58.6934\n' + '0.001 0.025 0.600\n'.repeat(2300)),
+    118: Buffer.from('An ASCII prefix followed by binary\0contents'),
+    119: Buffer.from('Unrelated course text'),
+  };
+  const names = {
+    113: 'Exercise+2.pdf',
+    116: 'in.nanowire',
+    117: 'Ni.eam',
+    118: 'opaque.unknown',
+    119: 'other.txt',
+  };
+  const assignment = (id) => ({
+    id,
+    name: id === 1 ? 'MD tensile test' : 'Second assignment',
+    updated_at: '2026-09-27',
+    submission_types: ['online_upload'],
+    description:
+      '<p>Analyze the included nanowire input and nickel potential.</p>' +
+      [113, 114, 116, 117, 118]
+        .map((file) => `<a href="/courses/1/files/${file}/download">Attachment ${file}</a>`)
+        .join(''),
+  });
+  const file = (id) => ({
+    id,
+    filename: names[id],
+    display_name: names[id],
+    size: bodies[id]?.length,
+    updated_at: '2026-09-27',
+    url: `https://files.example/${id}`,
+  });
+  const remoteRequest = async (address, options) => {
+    const url = new URL(address);
+    if (url.hostname === 'files.example') {
+      assert.equal(options.headers?.Authorization, undefined);
+      const id = Number(url.pathname.slice(1));
+      downloads.push(id);
+      return { status: 200, headers: {}, data: bodies[id] };
+    }
+    const dynamicFile = url.pathname.match(/\/files\/(\d+)$/),
+      dynamicAssignment = url.pathname.match(/\/assignments\/(\d+)$/);
+    const endpoints = {
+      '/api/v1/users/self/profile': { id: 1, name: 'Reader' },
+      '/api/v1/courses': [{ id: 1, name: 'Computational materials', course_code: 'TKT4146' }],
+      '/api/v1/courses/1/files': [file(113), file(119)],
+      '/api/v1/courses/1/assignments': [assignment(1), assignment(2)],
+      '/api/v1/courses/1/pages': [],
+      '/api/v1/courses/1/modules': [],
+    };
+    if (dynamicFile?.[1] === '114') return { status: 404, headers: {}, data: Buffer.from('{}') };
+    const value = dynamicFile
+      ? file(Number(dynamicFile[1]))
+      : dynamicAssignment
+        ? assignment(Number(dynamicAssignment[1]))
+        : endpoints[url.pathname];
+    assert.ok(value, url.pathname);
+    return { status: 200, headers: {}, data: Buffer.from(JSON.stringify(value)) };
+  };
+  const app = await fixture(t, {
+    canvasHosts: ['canvas.example'],
+    remoteRequest,
+    complete: async (payload) => {
+      completions.push(payload);
+      return { text: 'The input and potential are available.' };
+    },
+  });
+  const user = await app.login('attachments@example.com'),
+    stranger = await app.login('stranger@example.com');
+  const call = (data) => app.request('/api/action', { ...user, data });
+  await call({ action: 'connect', origin: 'https://canvas.example', token: 'private-token' });
+  await app.workspaces.account(user.user.id).job;
+  const account = app.workspaces.account(user.user.id),
+    course = account.library.courses[0];
+  const opened = await call({ action: 'assignment', courseID: course.id, id: 'assignments:1' });
+  assert.equal(opened.status, 200);
+  assert.equal(opened.body.library.selectedAssignmentID, 'assignments:1');
+  assert.equal(
+    opened.body.library.courses[0].documents.find(
+      (doc) => doc.id === opened.body.library.selectedDocumentID
+    ).kind,
+    'pdf'
+  );
+  await account.job;
+  let state = (await app.request('/api/state', user)).body;
+  assert.deepEqual(
+    state.assignmentFiles.map((ref) => ref.id),
+    [113, 114, 116, 117, 118].map((id) => `files:${id}`)
+  );
+  assert.deepEqual(
+    state.assignmentPDFs.map((ref) => ref.id),
+    ['files:113']
+  );
+  assert.match(state.assignmentFileNotices['files:114'], /404/);
+  assert.equal(downloads[0], 113, 'The default PDF opens before other files are prepared');
+  for (const id of [116, 117]) {
+    const doc = course.documents.find((entry) => entry.sourceKey === `files:${id}`);
+    assert.equal(doc.kind, 'code');
+    assert.equal(doc.unreadablePages, 0);
+    assert.deepEqual(await app.documents.data(account.id, doc), bodies[id]);
+    assert.equal((await app.request(`/api/document/${doc.id}`, stranger)).status, 404);
+  }
+  const binary = course.documents.find((doc) => doc.sourceKey === 'files:118');
+  assert.equal(binary.kind, 'preview');
+  assert.equal(binary.unreadablePages, 1);
+  delete binary.unreadablePages; // Libraries created before this release are normalized from their index.
+  state = (await app.request('/api/state', user)).body;
+  assert.equal(
+    state.library.courses[0].documents.find((doc) => doc.id === binary.id).unreadablePages,
+    1
+  );
+  assert.equal(
+    (
+      await call({
+        action: 'assignmentFile',
+        courseID: course.id,
+        assignmentID: 'assignments:1',
+        id: 'files:119',
+      })
+    ).status,
+    404
+  );
+  assert.equal(
+    (
+      await app.request('/api/action', {
+        ...stranger,
+        data: {
+          action: 'assignmentFile',
+          courseID: course.id,
+          assignmentID: 'assignments:1',
+          id: 'files:116',
+        },
+      })
+    ).status,
+    404
+  );
+  state = (
+    await call({
+      action: 'assignmentFile',
+      courseID: course.id,
+      assignmentID: 'assignments:1',
+      id: 'files:116',
+    })
+  ).body;
+  await account.job;
+  const selectedID = state.library.selectedDocumentID;
+  assert.match(state.pageText, /pair_style eam/);
+  assert.equal(state.library.selectedAssignmentID, 'assignments:1');
+  app.workspaces.accounts.delete(account.id);
+  state = (await app.request('/api/state', user)).body;
+  assert.equal(state.library.selectedDocumentID, selectedID);
+  assert.equal(state.library.selectedAssignmentID, 'assignments:1');
+  await call({ action: 'context', enabled: false });
+  state = (await app.request('/api/state', user)).body;
+  state = (await call({ action: 'send', text: 'Explain this assignment', owner: state.draftOwner }))
+    .body;
+  await app.workspaces.account(account.id).job;
+  assert.match(completions[0].context, /pair_style eam/);
+  assert.match(completions[0].context, /Nickel EAM potential/);
+  assert.match(completions[0].context, /Measure the tensile strain/);
+  assert.match(completions[0].context, /not downloaded; contents unavailable/);
+  assert.match(
+    completions[0].context,
+    /opaque.unknown: saved original; no readable text available/
+  );
+  assert.doesNotMatch(completions[0].context, /Unrelated course text|ASCII prefix/);
+  assert.ok(completions[0].context.length <= 48000);
+  state = (await app.request('/api/state', user)).body;
+  const threadID = state.library.selectedThreadID,
+    reply = state.messages.at(-1);
+  const source = state.sources[reply.id].find((entry) => entry.title === 'Ni.eam');
+  assert.ok(source);
+  state = (await call({ action: 'source', id: source.documentID, page: source.page })).body;
+  assert.equal(state.library.selectedThreadID, threadID);
+  assert.equal(state.library.selectedAssignmentID, 'assignments:1');
+  assert.equal(state.messages.at(-1).id, reply.id);
+  state = (
+    await call({
+      action: 'assignmentFile',
+      courseID: course.id,
+      assignmentID: 'assignments:1',
+      id: 'files:113',
+    })
+  ).body;
+  await app.workspaces.account(account.id).job;
+  const oldOwner = state.draftOwner;
+  await call({ action: 'assignment', courseID: course.id, id: 'assignments:2' });
+  await app.workspaces.account(account.id).job;
+  assert.equal(
+    (await call({ action: 'send', text: 'Stale question', owner: oldOwner })).status,
+    409
+  );
+  assert.equal(
+    (
+      await call({
+        action: 'assignmentFile',
+        courseID: course.id,
+        assignmentID: 'assignments:1',
+        id: 'files:116',
+      })
+    ).status,
+    409
+  );
+  assert.equal(
+    (await app.request('/api/state', user)).body.library.selectedAssignmentID,
+    'assignments:2'
+  );
+  assert.equal(downloads.filter((id) => id === 116).length, 1, 'Cached attachments are reused');
+});
+
+test('legacy scientific previews are reindexed offline without changing document identity or the original', async (t) => {
+  const app = await fixture(t, {
+    remoteRequest: async () => {
+      throw new Error('Network must not be used for cached indexing.');
+    },
+  });
+  const user = await app.login('legacy-preview@example.com');
+  await app.request('/api/action', {
+    ...user,
+    data: { action: 'create', name: 'Cached assignment' },
+  });
+  const account = app.workspaces.account(user.user.id),
+    course = account.library.courses[0];
+  const original = Buffer.from('units metal\npair_style eam\n# offline legacy input');
+  const document = await app.documents.import(account.id, 'in.nanowire', original);
+  const instructions = await app.documents.import(
+    account.id,
+    'instructions.md',
+    Buffer.from('Explain this molecular dynamics input.')
+  );
+  Object.assign(document, {
+    kind: 'preview',
+    indexVersion: 1,
+    unreadablePages: 1,
+    sourceKey: 'files:116',
+    sourceVersion: 'v1',
+    locallyEditedAt: 42,
+    title: 'My input',
+  });
+  Object.assign(instructions, { sourceKey: 'assignments:1', sourceVersion: 'v1' });
+  const { writeFile, stat } = await import('node:fs/promises');
+  const directory = app.documents.directory(account.id, document.id);
+  await writeFile(
+    join(directory, 'index.json'),
+    JSON.stringify({ pages: [{ number: 1, text: '' }] })
+  );
+  const before = await stat(join(directory, 'original'));
+  course.documents.push(instructions, document);
+  course.canvasMaterials.push(
+    {
+      id: 'assignments:1',
+      kind: 'assignments',
+      title: 'MD tensile test',
+      version: 'v1',
+      assignment: { linkedFileIDs: ['116'] },
+    },
+    {
+      id: 'files:116',
+      kind: 'files',
+      remoteID: '116',
+      title: 'in.nanowire',
+      fileName: 'in.nanowire',
+      version: 'v1',
+    }
+  );
+  await app.request('/api/action', {
+    ...user,
+    data: { action: 'assignment', courseID: course.id, id: 'assignments:1' },
+  });
+  await account.job;
+  assert.equal(document.kind, 'code');
+  assert.equal(document.unreadablePages, 0);
+  assert.equal(document.title, 'My input');
+  assert.equal(document.locallyEditedAt, 42);
+  assert.equal(document.sourceKey, 'files:116');
+  assert.equal((await stat(join(directory, 'original'))).mtimeMs, before.mtimeMs);
+  assert.deepEqual(await app.documents.data(account.id, document), original);
+  assert.match((await app.documents.index(account.id, document)).pages[0].text, /pair_style eam/);
+  const opened = await app.request('/api/action', {
+    ...user,
+    data: {
+      action: 'assignmentFile',
+      courseID: course.id,
+      assignmentID: 'assignments:1',
+      id: 'files:116',
+    },
+  });
+  assert.equal(opened.body.library.selectedDocumentID, document.id);
+  assert.equal(opened.body.library.selectedAssignmentID, 'assignments:1');
+  assert.deepEqual(opened.body.assignmentFileNotices, {});
+});

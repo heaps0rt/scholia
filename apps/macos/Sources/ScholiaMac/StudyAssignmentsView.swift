@@ -114,7 +114,7 @@ struct StudyAssignmentAgendaView: View {
                     }.padding(.trailing, 3).padding(.vertical, 3)
                 }
                 Text(
-                    "\(filter == .hidden ? "Restore assignments to show them again" : filter == .due ? "Next deadlines, then newest overdue" : filter == .handedIn ? "Submitted & graded in Canvas" : filter == .all ? "All indexed assignments" : "Undated & completed") · \(TimeZone.current.identifier)"
+                    "\(filter == .hidden ? "Unhide assignments to show them in other lists" : filter == .due ? "Next deadlines, then newest overdue" : filter == .handedIn ? "Submitted & graded in Canvas" : filter == .all ? "Complete list, including hidden assignments" : "Undated & completed") · \(TimeZone.current.identifier)"
                 )
                 .font(.system(size: 9)).foregroundStyle(.tertiary)
             }.padding(20).frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
@@ -145,7 +145,7 @@ struct StudyAssignmentAgendaView: View {
                 !query.isEmpty
                     ? "Try an assignment title or course code."
                     : filter == .hidden
-                        ? "Assignments you remove from the list can be restored here."
+                        ? "Assignments you hide remain available here and in All assignments."
                         : filter == .handedIn || filter == .all
                             ? "Sync Canvas to refresh submission status."
                             : filter == .archive
@@ -179,7 +179,13 @@ struct StudyAssignmentAgendaView: View {
                                 ).fixedSize()
                             }
                         }.font(.system(size: 10))
-                        StudySubmissionBadge(status: item.details?.status)
+                        HStack(spacing: 6) {
+                            StudySubmissionBadge(status: item.details?.status)
+                            if item.isHidden {
+                                Label("Hidden", systemImage: "eye.slash")
+                                    .font(.system(size: 10)).foregroundStyle(.secondary)
+                            }
+                        }
                         if let availability = item.details?.availability(at: .now) {
                             Text(availability).font(.system(size: 9)).foregroundStyle(.secondary)
                         }
@@ -196,17 +202,18 @@ struct StudyAssignmentAgendaView: View {
                 }
             }
             Button {
-                workspace.setAssignmentHidden(item.material.id, courseID: item.course.id, hidden: filter != .hidden)
+                workspace.setAssignmentHidden(item.material.id, courseID: item.course.id, hidden: !item.isHidden)
             } label: {
                 Label(
-                    filter == .hidden ? "Restore" : "Remove from list",
-                    systemImage: filter == .hidden ? "arrow.uturn.backward" : "minus.circle"
+                    item.isHidden ? "Unhide" : "Hide",
+                    systemImage: item.isHidden ? "eye" : "eye.slash"
                 )
                 .font(.system(size: 10)).foregroundStyle(.secondary)
             }.scholiaButtonStyle(.plain).padding(.horizontal, 10).padding(.bottom, 9)
                 .help(
-                    filter == .hidden
-                        ? "Show this assignment again" : "Hide this assignment. Restore it using the Hidden filter.")
+                    item.isHidden
+                        ? "Show this assignment in other lists"
+                        : "Hide this assignment. It remains in All assignments and Hidden.")
         }.frame(maxWidth: .infinity, alignment: .leading)
             .background(
                 scheme == .dark ? Color.white.opacity(0.025) : .white.opacity(0.8),
@@ -225,7 +232,8 @@ struct StudyAssignmentsView: View {
     var body: some View {
         TimelineView(.periodic(from: .now, by: 60)) { context in
             let assignments = StudyAssignment.list(
-                courses: courses, query: query, includeCompleted: !dashboard && includeCompleted, dueOnly: dashboard)
+                courses: courses, query: query, includeCompleted: !dashboard && includeCompleted, dueOnly: dashboard,
+                includeHidden: !dashboard && includeCompleted)
             VStack(alignment: .leading, spacing: 14) {
                 ViewThatFits(in: .horizontal) {
                     HStack {
@@ -312,6 +320,10 @@ struct StudyAssignmentsView: View {
                 Spacer(minLength: 0)
                 VStack(alignment: .trailing, spacing: 5) {
                     StudySubmissionBadge(status: item.details?.status)
+                    if item.isHidden {
+                        Label("Hidden", systemImage: "eye.slash")
+                            .font(.system(size: 10)).foregroundStyle(.secondary)
+                    }
                     if overdue { Text(status).font(.system(size: 10, weight: .medium)).foregroundStyle(Color.orange) }
                 }
             }
@@ -320,9 +332,12 @@ struct StudyAssignmentsView: View {
                     Text(availability).font(.system(size: 10)).foregroundStyle(.secondary)
                 }
                 Spacer(minLength: 0)
-                Button("Remove from list") {
-                    workspace.setAssignmentHidden(item.material.id, courseID: item.course.id, hidden: true)
-                }.help("Restore it using the Hidden filter in the assignment sidebar")
+                Button(item.isHidden ? "Unhide" : "Hide") {
+                    workspace.setAssignmentHidden(item.material.id, courseID: item.course.id, hidden: !item.isHidden)
+                }.help(
+                    item.isHidden
+                        ? "Show this assignment in other lists"
+                        : "Hide this assignment. It remains in All assignments and Hidden.")
                 Button("Read assignment") {
                     workspace.openAssignment(item.material, courseID: item.course.id)
                 }

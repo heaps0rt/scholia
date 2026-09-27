@@ -35,7 +35,7 @@ than appearing as duplicate files.
 
 The dashboard agenda spans workspaces independently of the workspace search and
 semester filters. **Due & overdue** shows outstanding work; **Handed in** shows
-submitted or graded work. **All**, **Archive**, and **Hidden** keep the other
+submitted or graded work. **All assignments**, **Archive**, and **Hidden** keep the other
 states accessible. Date headers group assignments with the same local deadline
 inside the list. Each course also has its own assignment list.
 
@@ -45,14 +45,26 @@ is not treated as proof that work is outstanding. Refresh Canvas to update the
 status; a saved badge reflects the last successful sync.
 
 Clicking an assignment opens its instructions and the first explicitly linked
-Canvas PDF in Scholia's reader. PDF buttons switch attachments. Assignments
-without a linked PDF show their instructions. Saved instructions and downloaded
-PDFs remain available locally in the Mac app. A failed download offers Retry
-without discarding saved material.
+Canvas PDF in Scholia's reader. **Included files** lists every linked file;
+choose one to read it while keeping the assignment open. This includes readable
+simulation inputs and data such as `in.nanowire` and `Ni.eam`, as well as PDFs.
+Assignments without a linked PDF show their instructions and included files.
+Saved instructions and downloaded files remain available locally in the Mac app.
+A failed download offers Retry without discarding saved material.
 
-Use an assignment's remove/hide control to take it out of the visible lists.
-The **Hidden** filter lets you restore it later. This changes only your Scholia
-list; it does not delete the Canvas assignment or alter a submission. The
+Opening an assignment prepares its linked files for the study companion.
+Instructions and readable attachment content receive their own context budget,
+even when **Include relevant course materials** is off. File labels distinguish
+ready content from files that still need to be opened or have no readable text.
+Automatic preparation covers up to 50 files, 20 MB each and 50 MB total; open
+larger supported files individually. Unsupported binary files retain their
+original for viewing, with no claim that their contents are readable by the tutor.
+
+Choose **Hide** to keep an assignment out of your usual lists. **All assignments**
+shows the complete list, including hidden items, in both the sidebar and each
+workspace. The **Hidden** filter shows only hidden items. Choose **Unhide** in
+either view to show an assignment in your usual lists again. This changes only
+your Scholia list; it does not delete the assignment or alter a submission. The
 separate Canvas link opens the original assignment when you need to hand in work.
 
 ## Canvas and downloads

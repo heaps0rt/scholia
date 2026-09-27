@@ -286,7 +286,7 @@ function update(next) {
   if (!draftDirty) draftOwner = state.draftOwner;
   $('#review-due').textContent = `Review due${state.reviewDue ? ` (${state.reviewDue})` : ''}`;
   $('#practice-this').hidden = state.showingLibrary || !course();
-  const context = `${state.library.selectedCourseID}:${state.library.selectedDocumentID}:${state.library.selectedThreadID}`;
+  const context = `${state.library.selectedCourseID}:${state.library.selectedAssignmentID}:${state.library.selectedDocumentID}:${state.library.selectedThreadID}`;
   if (context !== previousContext) {
     // Native navigation takes effect in this view too; unsaved browser typing is
     // sent before browser-initiated navigation by navigate().
@@ -325,6 +325,14 @@ function update(next) {
     assignment,
     state.assignmentText,
     state.assignmentPDFs,
+    state.assignmentFiles,
+    state.assignmentFileNotices,
+    course()?.documents.map((document) => [
+      document.sourceKey,
+      document.kind,
+      document.pageCount,
+      document.unreadablePages,
+    ]),
     state.assignmentNotice,
     state.busy,
     doc()?.sourceKey,
@@ -410,8 +418,9 @@ function update(next) {
   $('#mode-description').textContent =
     teachingModes.find((item) => item.mode === state.mode)?.summary || '';
   $('#include-course').checked = state.includeCourse;
-  $('#context-label').textContent =
-    doc()?.kind === 'notebook'
+  $('#context-label').textContent = selectedAssignment(state)
+    ? 'Assignment instructions + included files'
+    : doc()?.kind === 'notebook'
       ? `Cell ${state.page} + full notebook context`
       : doc()
         ? `${['code', 'office'].includes(doc().kind) ? 'Section' : 'Page'} ${state.page} + document context`
@@ -574,7 +583,7 @@ async function renderReader() {
     readerURLs = [];
     $('#reader-content').classList.remove('pdf-active', 'pdf-dark');
     $('#reader-toolbar').innerHTML =
-      `<span class="eyebrow">EDIT ${item.kind === 'notebook' ? 'NOTEBOOK' : 'DOCUMENT'}</span><div class="tools"><small>Saved locally</small>${button('Cancel', 'cancelDocumentEdit')}${button(edit.busy ? 'Saving…' : 'Save changes', 'saveDocument', '', 'primary')}</div>`;
+      `<span class="eyebrow">EDIT ${item.kind === 'notebook' ? 'NOTEBOOK' : 'DOCUMENT'}</span><div class="tools"><small>${savedLabel}</small>${button('Cancel', 'cancelDocumentEdit')}${button(edit.busy ? 'Saving…' : 'Save changes', 'saveDocument', '', 'primary')}</div>`;
     $('#reader-footer').innerHTML =
       `<span>${edit.dirty ? 'Unsaved changes' : hosted ? 'Editing account copy' : 'Editing local copy'}</span><span>${item.kind === 'notebook' ? 'Saved outputs are not rerun · ' : ''}Save to update tutor context</span>`;
     if (!documentEditor)
@@ -698,7 +707,7 @@ async function renderReader() {
   }
   if (item.kind === 'preview') {
     $('#reader-content').innerHTML =
-      `${notice}<article class="paper original-file"><span class="eyebrow">SAVED ORIGINAL</span><h2>${esc(item.title)}</h2><p>Open this file’s preview inside the Mac app, or download the original.</p>${button('Preview in Scholia ↗', 'native')}${button('Download original', 'downloadOriginal')}</article>`;
+      `${notice}<article class="paper original-file"><span class="eyebrow">SAVED ORIGINAL</span><h2>${esc(item.title)}</h2><p>${hosted ? 'Download the original to open it in a compatible application.' : 'Open this file’s preview inside the Mac app, or download the original.'}</p>${hosted ? '' : button('Preview in Scholia ↗', 'native')}${button('Download original', 'downloadOriginal')}</article>`;
     return;
   }
   if (item.kind === 'image') {
@@ -713,6 +722,10 @@ async function renderReader() {
   }
 }
 async function explainSelection(text, page, explain, question = '', documentID = doc()?.id) {
+  if (explain && selectedAssignment(state) && state.busy) {
+    notify('Preparing the assignment files. Try explaining this passage once they are ready.');
+    return false;
+  }
   if (explain && state.streaming) {
     notify('Wait for the current answer to finish, then ask your follow-up.');
     return false;
@@ -822,7 +835,10 @@ function renderComposer() {
   $('#send').disabled =
     sendPending ||
     (!state.streaming &&
-      (state.loadingDocument || !course() || (!$('#question').value.trim() && !imageData)));
+      (state.loadingDocument ||
+        (selectedAssignment(state) && state.busy) ||
+        !course() ||
+        (!$('#question').value.trim() && !imageData)));
   $('#question-image').hidden = !imageData;
   $('#question-image').innerHTML = imageData
     ? `<img alt="Attached question image" src="data:image/jpeg;base64,${imageData}"><span>Image attached</span>${button('×', 'removeImage')}`
@@ -885,6 +901,10 @@ async function navigate(name, values = {}) {
 }
 async function send() {
   if (sendPending) return;
+  if (!state.streaming && selectedAssignment(state) && state.busy) {
+    notify('Preparing the assignment files. Your question is kept here.');
+    return;
+  }
   if (state.streaming) return action('stop');
   if (state.loadingDocument) {
     notify('Your reading is opening. Your question is saved here.');
@@ -1064,6 +1084,7 @@ document.addEventListener('click', async (event) => {
         await navigate(name, { id, courseID: target.dataset.courseId });
         break;
       case 'assignmentPDF':
+      case 'assignmentFile':
         if (!state.busy)
           await navigate(name, {
             id,

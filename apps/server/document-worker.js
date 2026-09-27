@@ -1,5 +1,6 @@
 import { parentPort, workerData } from 'node:worker_threads';
 import { extname } from 'node:path';
+import { safePlainText, unreadablePageCount } from './document-formats.js';
 import { DOMParser } from 'linkedom';
 import { extractOfficeText } from '../chrome/src/office-text.js';
 globalThis.DOMParser = DOMParser;
@@ -113,8 +114,7 @@ try {
       'yml',
       'tex',
       'log',
-    ].includes(ext) ||
-    !ext
+    ].includes(ext)
   ) {
     kind = ['md', 'txt'].includes(ext) ? 'text' : 'code';
     const text = new TextDecoder('utf-8', { fatal: true }).decode(bytes);
@@ -124,11 +124,21 @@ try {
       text: kind === 'code' ? `\`\`\`\n${page.text}\n\`\`\`` : page.text,
     }));
   } else {
-    kind = 'preview';
-    pages = [{ number: 1, text: '' }];
-    notice = 'The original is saved. Download it to open in a compatible application.';
+    // Scientific inputs often have project-specific extensions, such as .nanowire or .eam.
+    // Decode the complete bounded file; a printable prefix alone cannot identify binary data.
+    const text = safePlainText(bytes, ext);
+    if (text !== null) {
+      kind = 'code';
+      pages = textPages(text).map((page) => ({ ...page, text: `\`\`\`\n${page.text}\n\`\`\`` }));
+    } else {
+      kind = 'preview';
+      pages = [{ number: 1, text: '' }];
+      notice =
+        'The original is saved, but no readable text was indexed. Download it to open in a compatible application.';
+    }
   }
-  parentPort.postMessage({ kind, notice, pages, images });
+  const unreadablePages = unreadablePageCount(pages);
+  parentPort.postMessage({ kind, notice, pages, images, unreadablePages });
 } catch (error) {
   parentPort.postMessage({ error: error.message });
 }

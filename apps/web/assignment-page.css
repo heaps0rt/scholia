@@ -63,23 +63,40 @@
 .assignment-only .assignment-description {
   max-height: none;
 }
-.assignment-pdfs {
-  display: flex;
-  gap: 7px;
-  overflow: auto;
-  padding: 9px 0 1px;
-}
-.assignment-pdfs button {
-  flex: none;
+.assignment-files h2 {
   font-size: 11px;
-  max-width: 260px;
+  margin: 12px 0 7px;
+}
+.assignment-files h2 span {
+  color: var(--muted);
+  font-weight: 400;
+  margin-left: 5px;
+}
+.assignment-file-list {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 190px), 1fr));
+  gap: 7px;
+}
+.assignment-file-list button {
+  min-width: 0;
+  text-align: left;
+  font-size: 11px;
+  padding: 8px 10px;
+}
+.assignment-file-list button span,
+.assignment-file-list button small {
+  display: block;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-.assignment-pdfs button[aria-pressed='true'] {
-  background: var(--green);
-  color: white;
+.assignment-file-list button small {
+  color: var(--muted);
+  font-size: 10px;
+  margin-top: 4px;
+}
+.assignment-file-list button[aria-pressed='true'] {
+  background: var(--soft);
   border-color: var(--green);
 }
 .assignment-file-note {
