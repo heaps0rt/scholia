@@ -1,4 +1,8 @@
 import { createHtmlElement } from './html-elements.js';
+import { pageContextWithHtml, sanitizedPageHtml } from './page-html.js';
+import { collectLivePageText } from './deep-page.js';
+import { mailContextForSelection } from './mail-context.js';
+import { detectDocumentLanguage } from './document-language.js';
 
 const MAX_SELECTION_LENGTH = 12_000;
 const MAX_IMAGE_EDGE = 1_800;
@@ -54,6 +58,33 @@ export function currentSiteKey() {
 function isEditable(node) {
   const element = node?.nodeType === Node.ELEMENT_NODE ? node : node?.parentElement;
   return Boolean(element?.closest?.('input, textarea, select, [contenteditable="true"], [contenteditable=""]'));
+}
+
+function nodeElement(node) {
+  return node?.nodeType === Node.ELEMENT_NODE ? node : node?.parentElement;
+}
+
+function isOverleafLocation(locationValue = globalThis.location) {
+  try {
+    const hostname = String(locationValue?.hostname || new URL(locationValue?.href).hostname).toLowerCase();
+    return hostname === 'overleaf.com' || hostname.endsWith('.overleaf.com');
+  } catch {
+    return false;
+  }
+}
+
+export function overleafEditorSelection(anchorNode, focusNode, locationValue = globalThis.location) {
+  if (!isOverleafLocation(locationValue)) return false;
+  const anchorEditor = nodeElement(anchorNode)?.closest?.('.cm-editor, .CodeMirror');
+  const focusEditor = nodeElement(focusNode)?.closest?.('.cm-editor, .CodeMirror');
+  return Boolean(anchorEditor && focusEditor && anchorEditor === focusEditor);
+}
+
+function editorSelectionText(selection) {
+  return String(selection?.toString?.() || '')
+    .replace(/\r\n?/g, '\n')
+    .replace(/[\t\f\v ]+$/gm, '')
+    .trim();
 }
 
 function mathIsDisplay(container) {
@@ -222,14 +253,63 @@ export function pageContext() {
   const previousPriority = extensionHost?.style.getPropertyPriority('display') || '';
   if (extensionHost) extensionHost.style.setProperty('display', 'none', 'important');
   try {
-    const renderedText = document.body?.innerText || document.documentElement?.innerText || '';
-    return normalizePageText(renderedText);
+    return normalizePageText(collectLivePageText(document));
   } finally {
     if (extensionHost) {
       if (previousDisplay) extensionHost.style.setProperty('display', previousDisplay, previousPriority);
       else extensionHost.style.removeProperty('display');
     }
   }
+}
+
+export function visiblePageContext(documentValue = document, {
+  maxCharacters = 6_000,
+  maxNodes = 4_000
+} = {}) {
+  const root = documentValue?.body || documentValue?.documentElement;
+  if (!root || typeof documentValue.createTreeWalker !== 'function') return '';
+  const view = documentValue.defaultView || globalThis.window;
+  const width = Math.max(1, Number(view?.innerWidth) || 1);
+  const height = Math.max(1, Number(view?.innerHeight) || 1);
+  const showText = globalThis.NodeFilter?.SHOW_TEXT ?? 4;
+  const walker = documentValue.createTreeWalker(root, showText);
+  const fragments = [];
+  const seen = new Set();
+  let used = 0;
+  let scanned = 0;
+
+  while (walker.nextNode() && scanned < maxNodes && used < maxCharacters) {
+    scanned += 1;
+    const node = walker.currentNode;
+    const element = node.parentElement;
+    if (!element || element.closest?.(
+      '#scholia-extension-root,script,style,noscript,template,input,textarea,select,[aria-hidden="true"]'
+    )) continue;
+    const text = collapseWhitespace(node.nodeValue || '');
+    if (!text || seen.has(text)) continue;
+
+    let visible = false;
+    try {
+      const range = documentValue.createRange();
+      range.selectNodeContents(node);
+      for (const rect of range.getClientRects()) {
+        if (rect.width <= 0 && rect.height <= 0) continue;
+        if (rect.right > 0 && rect.bottom > 0 && rect.left < width && rect.top < height) {
+          visible = true;
+          break;
+        }
+      }
+      range.detach?.();
+    } catch {}
+    if (!visible) continue;
+
+    const remaining = maxCharacters - used;
+    const bounded = text.slice(0, remaining);
+    fragments.push(bounded);
+    seen.add(text);
+    used += bounded.length + 1;
+  }
+  return fragments.join('\n').trim();
 }
 
 export function pageOutline() {
@@ -256,54 +336,95 @@ export function lastRangeRect(range) {
 }
 
 export function pageMetadata() {
+  const renderedContext = pageContext();
+  const htmlContext = sanitizedPageHtml();
   return {
-    context: pageContext(),
+    context: pageContextWithHtml(renderedContext, htmlContext),
+    visibleContext: visiblePageContext(),
     outline: pageOutline(),
     pageTitle: document.title,
     url: sourceUrl(),
     pageLanguage: document.documentElement.lang || navigator.language,
-    imageDataUrl: ''
+    imageDataUrl: '',
+    renderedContextCharacters: renderedContext.length,
+    htmlContextCharacters: htmlContext.length
   };
 }
 
-export async function resolvedPageMetadata() {
+export async function resolvedPageMetadata(options = {}) {
   const resolver = document.documentElement?.dataset?.scholiaPdfViewer === 'true'
     ? globalThis.__scholiaGetPageMetadata
     : null;
-  if (typeof resolver !== 'function') return pageMetadata();
-  const metadata = await resolver();
-  return {
+  const metadata = typeof resolver === 'function' ? await resolver(options) : pageMetadata();
+  const resolved = {
     context: String(metadata?.context || ''),
+    visibleContext: String(metadata?.visibleContext || visiblePageContext()),
     outline: String(metadata?.outline || ''),
     pageTitle: String(metadata?.pageTitle || document.title),
     url: String(metadata?.url || sourceUrl()),
     pageLanguage: String(metadata?.pageLanguage || document.documentElement.lang || navigator.language),
-    imageDataUrl: String(metadata?.imageDataUrl || '')
+    imageDataUrl: String(metadata?.imageDataUrl || ''),
+    pageCount: Math.max(0, Number(metadata?.pageCount) || 0),
+    extractedPageCount: Math.max(0, Number(metadata?.extractedPageCount) || 0),
+    extractedCharacters: Math.max(0, Number(metadata?.extractedCharacters) || 0),
+    ...(typeof resolver === 'function' ? { pdfViewer: true } : {}),
+    ...(metadata?.pdfLocalContext ? { pdfLocalContext: true } : {}),
+    renderedContextCharacters: Math.max(0, Number(metadata?.renderedContextCharacters) || 0),
+    htmlContextCharacters: Math.max(0, Number(metadata?.htmlContextCharacters) || 0)
   };
+  resolved.pageLanguage = await detectDocumentLanguage({
+    context: resolved.context,
+    visibleContext: resolved.visibleContext,
+    fallback: resolved.pageLanguage
+  });
+  return resolved;
 }
 
 export function currentSelectionCapture(forcedText = '', selection = window.getSelection()) {
   const forcedSelection = collapseWhitespace(forcedText);
   if (forcedSelection) {
+    const range = selection && !selection.isCollapsed && selection.rangeCount
+      ? selection.getRangeAt(0)
+      : null;
+    const mail = range ? mailContextForSelection(range, { selectedText: forcedSelection }) : null;
     return {
-      kind: 'text',
+      kind: mail ? 'mail' : 'text',
       selection: forcedSelection.slice(0, MAX_SELECTION_LENGTH),
       preview: forcedSelection,
-      rect: null
+      rect: range ? lastRangeRect(range) : null,
+      range: range?.cloneRange(),
+      ...(mail ? {
+        mailContext: mail.context,
+        mailSubject: mail.subject,
+        mailMessageCount: mail.messageCount,
+        defaultQuestion: mail.defaultQuestion
+      } : {})
     };
   }
   if (!selection || selection.isCollapsed || !selection.rangeCount) return null;
-  if (isEditable(selection.anchorNode) || isEditable(selection.focusNode)) return null;
+  const hasEditableEndpoint = isEditable(selection.anchorNode) || isEditable(selection.focusNode);
+  const isOverleafSelection = hasEditableEndpoint
+    && overleafEditorSelection(selection.anchorNode, selection.focusNode);
+  if (hasEditableEndpoint && !isOverleafSelection) return null;
 
   const range = selection.getRangeAt(0);
-  const text = selectionTextWithMath(range, selection);
+  const text = isOverleafSelection
+    ? editorSelectionText(selection)
+    : selectionTextWithMath(range, selection);
   if (!text) return null;
+  const mail = mailContextForSelection(range, { selectedText: text });
   return {
-    kind: /\$[^$]+\$/.test(text) ? 'latex' : 'text',
+    kind: mail ? 'mail' : isOverleafSelection || /\$[^$]+\$/.test(text) ? 'latex' : 'text',
     selection: text.slice(0, MAX_SELECTION_LENGTH),
     preview: text,
     rect: lastRangeRect(range),
-    range: range.cloneRange()
+    range: range.cloneRange(),
+    ...(mail ? {
+      mailContext: mail.context,
+      mailSubject: mail.subject,
+      mailMessageCount: mail.messageCount,
+      defaultQuestion: mail.defaultQuestion
+    } : {})
   };
 }
 

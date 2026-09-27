@@ -32,7 +32,25 @@
           </select>
         </label>
         <label class="check"><input id="explain-on-selection" type="checkbox"><span>Show the Explain pill after selecting text</span></label>
-        <label class="check"><input id="include-context" type="checkbox"><span>Use page-wide reference context</span></label>
+        <label class="check"><input id="include-context" type="checkbox"><span>Use compact page context by default (off uses full context; each chat can choose None)</span></label>
+      </section>
+
+      <section class="card shortcuts-card">
+        <div class="section-heading">
+          <div><p class="eyebrow">Browser commands</p><h2>Keyboard shortcuts</h2></div>
+          <button id="open-shortcuts" type="button" class="secondary">Change shortcuts</button>
+        </div>
+        <p class="section-copy">Chrome stores these bindings. Assign different keys here when the Scholia desktop app owns a shortcut in the same application.</p>
+        <div class="shortcut-list">
+          <div class="shortcut-row">
+            <div><strong>Select a screen region</strong><small>Capture a visible area, then explain it as-is or add a question.</small></div>
+            <kbd id="capture-region-shortcut">Loading…</kbd>
+          </div>
+          <div class="shortcut-row">
+            <div><strong>Toggle Quick Chat</strong><small>Open a fresh Scholia sidebar chat, or close it when it is already open.</small></div>
+            <kbd id="quick-chat-shortcut">Loading…</kbd>
+          </div>
+        </div>
       </section>
 
       <section class="card provider-card">
@@ -50,7 +68,7 @@
           <span>Reasoning effort</span>
           <select id="reasoning"></select>
         </label>
-        <label id="fast-row" class="check" hidden><input id="fast-mode" type="checkbox"><span>Use Claude Code fast mode</span></label>
+        <label id="fast-row" class="check" hidden><input id="fast-mode" type="checkbox"><span>Use Fast mode (higher provider usage)</span></label>
         <label>
           <span>Endpoint</span>
           <input id="endpoint" type="url" spellcheck="false" autocomplete="off">
@@ -68,6 +86,53 @@
             <button id="bridge-start" type="button" class="primary">Start bridge</button>
             <button id="bridge-copy" type="button" class="secondary">Copy start command</button>
             <button id="bridge-install" type="button" class="secondary">Copy launcher installer</button>
+          </div>
+        </div>
+      </section>
+
+      <section class="card chatgpt-web-card">
+        <div class="section-heading">
+          <div><p class="eyebrow">Optional response context</p><h2>ChatGPT web memory &amp; project</h2></div>
+          <span id="chatgpt-web-status" class="badge">Checking…</span>
+        </div>
+        <p class="section-copy">Import an editable snapshot from a ChatGPT tab where you are already signed in. The memory action opens Personalization, presses Memory summary → Manage, and reads the rendered memory text. Scholia never reads login cookies or calls private ChatGPT endpoints.</p>
+        <label class="check"><input id="chatgpt-web-enabled" type="checkbox"><span>Preselect this context when explaining text selected from a response</span></label>
+        <label class="check"><input id="chatgpt-web-auto-use" type="checkbox"><span>Automatically use imported memory on chatgpt.com; include project context only in the matching project</span></label>
+        <label>
+          <span>Refresh and use in Quick Chat</span>
+          <select id="chatgpt-quick-chat-refresh"></select>
+          <small id="chatgpt-quick-chat-refresh-detail">Manual only. Choose a schedule to refresh through a temporary background ChatGPT tab and include the latest saved snapshot in Quick Chat.</small>
+        </label>
+        <div class="chatgpt-web-connect">
+          <div><strong id="chatgpt-web-heading">Looking for ChatGPT in Chrome…</strong><p id="chatgpt-web-detail"></p></div>
+          <div class="bridge-actions">
+            <button id="chatgpt-web-open" type="button" class="secondary">Open ChatGPT</button>
+            <button id="chatgpt-web-refresh" type="button" class="secondary">Check again</button>
+          </div>
+        </div>
+        <div class="context-import-grid">
+          <label>
+            <span>Memory snapshot</span>
+            <textarea id="chatgpt-memory" rows="6" placeholder="Use Get full memory from ChatGPT. Scholia opens Personalization and Manage, then puts the rendered memory summary here for review."></textarea>
+            <small>Only this reviewed snapshot is used; changes to ChatGPT memory require another import.</small>
+          </label>
+          <div class="context-import-actions">
+            <button id="chatgpt-memory-import" type="button" class="secondary">Get full memory from ChatGPT</button>
+            <button id="chatgpt-memory-capture" type="button" class="quiet">Use current selection instead</button>
+            <button id="chatgpt-memory-clear" type="button" class="quiet">Clear</button>
+          </div>
+          <div class="project-fields">
+            <label><span>Project name</span><input id="chatgpt-project-name" autocomplete="off" placeholder="Optional project label"></label>
+            <label><span>Project page</span><input id="chatgpt-project-url" type="url" autocomplete="off" spellcheck="false" placeholder="Detected from the open ChatGPT project"></label>
+          </div>
+          <label>
+            <span>Project snapshot</span>
+            <textarea id="chatgpt-project-context" rows="7" placeholder="Open a ChatGPT project and select its instructions, relevant source descriptions, or other project context, then import."></textarea>
+            <small>Imported memory/project text is sent to the active Scholia provider only when you enable it in the selected-response popup.</small>
+          </label>
+          <div class="context-import-actions">
+            <button id="chatgpt-project-import" type="button" class="secondary">Import visible selection/dialog as project</button>
+            <button id="chatgpt-project-clear" type="button" class="quiet">Clear</button>
           </div>
         </div>
       </section>

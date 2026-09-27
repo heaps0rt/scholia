@@ -1,6 +1,6 @@
 {
   "name": "scholia",
-  "version": "0.1.0",
+  "version": "0.2.2",
   "private": true,
   "description": "Select text, math, or a screen region and get a contextual AI explanation.",
   "repository": {
@@ -21,25 +21,39 @@
   "license": "MIT",
   "type": "module",
   "engines": {
-    "node": ">=20"
+    "node": ">=24"
   },
   "scripts": {
     "build": "node scripts/build-chrome.mjs",
+    "build:macos": "zsh scripts/build-macos-app.sh",
+    "setup:macos-signing": "zsh scripts/setup-macos-signing.sh",
+    "install:macos": "zsh scripts/install-macos-app.sh",
+    "run:macos": "swift run --package-path apps/macos ScholiaMac",
     "package:chrome": "node scripts/package-chrome.mjs",
     "check": "node scripts/check-source.mjs && node scripts/check-macos-syntax.mjs && npm test",
     "check:dist": "node scripts/check-chrome-dist.mjs",
+    "smoke:chromium:recursion": "node scripts/smoke-chromium-panel-recursion.mjs",
+    "smoke:macos:workspace": "zsh scripts/smoke-macos-workspace.sh",
     "test": "node --test",
     "bridge:codex": "node scripts/codex-bridge.mjs",
     "bridge:claude": "node scripts/claude-code-bridge.mjs",
     "bridge:install:codex": "node scripts/install-codex-handler.mjs",
     "bridge:install:claude": "node scripts/install-claude-handler.mjs",
-    "bridge:install:opencode": "node scripts/install-opencode-handler.mjs"
+    "bridge:install:opencode": "node scripts/install-opencode-handler.mjs",
+    "build:web": "node scripts/build-study-web.mjs",
+    "start:web": "node apps/server/server.js",
+    "web:user": "node scripts/web-user.mjs"
   },
   "dependencies": {
+    "@napi-rs/canvas": "^1.0.9",
+    "highlight.js": "11.11.1",
     "katex": "0.16.47",
+    "linkedom": "^0.18.12",
+    "markdown-it": "15.0.0",
     "pdfjs-dist": "4.10.38"
   },
   "devDependencies": {
-    "esbuild": "^0.28.1"
+    "esbuild": "^0.28.1",
+    "prettier": "^3.6.2"
   }
 }

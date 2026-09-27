@@ -2,19 +2,25 @@
   "manifest_version": 3,
   "name": "Scholia — Select & Explain",
   "short_name": "Scholia",
-  "version": "0.1.0",
+  "version": "0.2.2",
   "description": "Select text, precise math, or a screen region and get a contextual AI explanation.",
   "homepage_url": "https://github.com/heaps0rt/scholia",
   "minimum_chrome_version": "116",
   "permissions": [
     "activeTab",
+    "alarms",
     "contextMenus",
+    "clipboardWrite",
+    "scripting",
     "storage",
     "sidePanel"
   ],
   "host_permissions": [
     "<all_urls>"
   ],
+  "content_security_policy": {
+    "extension_pages": "script-src 'self' 'wasm-unsafe-eval'; object-src 'self'"
+  },
   "background": {
     "service_worker": "service-worker.js",
     "type": "module"
@@ -26,7 +32,8 @@
     "128": "assets/icon-128.png"
   },
   "action": {
-    "default_title": "Open Scholia",
+    "default_title": "Open Scholia menu",
+    "default_popup": "popup.html",
     "default_icon": {
       "16": "assets/icon-16.png",
       "32": "assets/icon-32.png"
@@ -50,12 +57,27 @@
         "mac": "Command+Shift+S"
       },
       "description": "Capture and explain a screen region"
+    },
+    "quick-chat": {
+      "suggested_key": {
+        "default": "Ctrl+Shift+K",
+        "mac": "Command+Shift+K"
+      },
+      "description": "Toggle Scholia Quick Chat in the sidebar"
     }
   },
   "content_scripts": [
     {
       "matches": ["<all_urls>"],
       "js": ["content.js"],
+      "run_at": "document_idle",
+      "all_frames": true,
+      "match_about_blank": true,
+      "match_origin_as_fallback": true
+    },
+    {
+      "matches": ["https://chatgpt.com/*", "https://chat.openai.com/*"],
+      "js": ["chatgpt-probe.js"],
       "run_at": "document_idle",
       "all_frames": false
     }
@@ -64,7 +86,11 @@
     {
       "resources": [
         "vendor/katex/katex.min.css",
-        "vendor/katex/fonts/*"
+        "vendor/katex/fonts/*",
+        "vendor/pdfjs/pdf.min.mjs",
+        "vendor/pdfjs/pdf.worker.min.mjs",
+        "vendor/pdfjs/cmaps/*",
+        "vendor/pdfjs/standard_fonts/*"
       ],
       "matches": ["<all_urls>"]
     }

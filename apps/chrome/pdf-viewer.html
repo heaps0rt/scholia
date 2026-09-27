@@ -12,41 +12,156 @@
       <span class="mark" aria-hidden="true">S</span>
       <div class="document-copy">
         <strong id="document-title">Opening PDF…</strong>
-        <span id="document-status" role="status">Preparing Scholia PDF view</span>
+        <button id="source-url" class="document-source" type="button" hidden></button>
+        <div id="document-activity" class="document-activity" data-state="working">
+          <span class="document-activity__indicator" aria-hidden="true"></span>
+          <span id="document-status" role="status">Preparing Scholia PDF view</span>
+        </div>
+        <progress id="document-progress" class="document-progress" max="1" aria-label="PDF preparation progress"></progress>
       </div>
     </div>
 
     <div class="page-tools" aria-label="PDF navigation and zoom">
-      <span id="page-count" class="page-count">– / –</span>
+      <button id="outline-toggle" class="icon-button outline-toggle" type="button" title="Table of contents" aria-label="Show table of contents" aria-controls="pdf-outline" aria-expanded="false" disabled>
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M10 6h9M10 12h9M10 18h9"></path><path d="M5 6h.01M5 12h.01M5 18h.01"></path></svg>
+      </button>
+      <button id="search-toggle" class="icon-button search-toggle" type="button" title="Search PDF (⌘/Ctrl+F)" aria-label="Search PDF" aria-controls="pdf-search" aria-expanded="false">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="6.5"></circle><path d="m16 16 4 4"></path></svg>
+      </button>
+      <form id="page-count" class="page-count" aria-label="PDF page" novalidate>
+        <input id="page-number" class="page-number" type="number" inputmode="numeric" min="1" step="1" placeholder="–" aria-label="Page number" autocomplete="off" disabled>
+        <span aria-hidden="true">/</span>
+        <span id="page-total" class="page-total" aria-hidden="true">–</span>
+      </form>
+      <div id="pdf-view-control" class="pdf-view-control">
+        <button id="view-toggle" class="icon-button view-toggle" type="button" title="PDF view options" aria-label="PDF view options" aria-haspopup="menu" aria-controls="pdf-view-menu" aria-expanded="false">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="4" y="3.5" width="16" height="17" rx="1.5"></rect><path d="M8 8h8M8 12h8M8 16h5"></path></svg>
+        </button>
+        <div id="pdf-view-menu" class="pdf-view-menu" role="menu" aria-label="PDF view options" hidden>
+          <span class="pdf-view-menu__heading" role="presentation">Page layout</span>
+          <button type="button" role="menuitemradio" data-pdf-layout="continuous" aria-checked="true">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="6" y="2.5" width="12" height="8" rx="1"></rect><rect x="6" y="13.5" width="12" height="8" rx="1"></rect></svg>
+            <span><strong>Continuous</strong><small>Scroll through every page</small></span><span class="pdf-view-check" aria-hidden="true">✓</span>
+          </button>
+          <button type="button" role="menuitemradio" data-pdf-layout="page" aria-checked="false">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="5" y="2.5" width="14" height="19" rx="1.5"></rect></svg>
+            <span><strong>Single page</strong><small>Show one page at a time</small></span><span class="pdf-view-check" aria-hidden="true">✓</span>
+          </button>
+          <button type="button" role="menuitemradio" data-pdf-layout="spread" aria-checked="false">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="2.5" y="4" width="8.5" height="16" rx="1"></rect><rect x="13" y="4" width="8.5" height="16" rx="1"></rect></svg>
+            <span><strong>Two-page spread</strong><small>Read pages side by side</small></span><span class="pdf-view-check" aria-hidden="true">✓</span>
+          </button>
+          <span class="pdf-view-menu__heading pdf-view-menu__heading--separated" role="presentation">Page size</span>
+          <button type="button" role="menuitemradio" data-pdf-zoom="auto" aria-checked="false">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7 3H3v4M17 3h4v4M7 21H3v-4M17 21h4v-4"></path></svg>
+            <span><strong>Automatic</strong><small>Keep pages comfortably sized</small></span><span class="pdf-view-check" aria-hidden="true">✓</span>
+          </button>
+          <button type="button" role="menuitemradio" data-pdf-zoom="page" aria-checked="false">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="6" y="3" width="12" height="18" rx="1"></rect><path d="m9 7-2-2m8 2 2-2M9 17l-2 2m8-2 2 2"></path></svg>
+            <span><strong>Fit page</strong><small>Keep a full page in view</small></span><span class="pdf-view-check" aria-hidden="true">✓</span>
+          </button>
+          <button type="button" role="menuitemradio" data-pdf-zoom="width" aria-checked="false">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 12h18M6 9l-3 3 3 3M18 9l3 3-3 3"></path><rect x="7.5" y="4" width="9" height="16" rx="1"></rect></svg>
+            <span><strong>Fit width</strong><small>Use a wide reading view</small></span><span class="pdf-view-check" aria-hidden="true">✓</span>
+          </button>
+        </div>
+      </div>
       <button id="zoom-out" class="icon-button" type="button" title="Zoom out" aria-label="Zoom out">−</button>
-      <span id="zoom-label" class="zoom-label">100%</span>
+      <select id="zoom-label" class="zoom-label" aria-label="PDF zoom" title="PDF zoom">
+        <option value="auto">Automatic</option>
+        <option value="page">Fit page</option>
+        <option value="width">Fit width</option>
+        <option value="0.5">50%</option>
+        <option value="0.75">75%</option>
+        <option id="zoom-custom" value="1" selected>100%</option>
+        <option value="1.25">125%</option>
+        <option value="1.5">150%</option>
+        <option value="2">200%</option>
+      </select>
       <button id="zoom-in" class="icon-button" type="button" title="Zoom in" aria-label="Zoom in">＋</button>
+      <button id="theme-toggle" class="icon-button theme-toggle" type="button" title="Use dark reader interface" aria-label="Use dark reader interface" aria-pressed="false">◐</button>
     </div>
 
     <div class="toolbar-actions">
+      <button id="learning-toggle" class="quiet-button learning-toggle" type="button" aria-pressed="false" title="Guide with graduated hints, or request a worked solution">◇ Guided learning</button>
+      <button id="download-pdf" class="icon-button download-button" type="button" title="Download PDF" aria-label="Download PDF" disabled>
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3v12m-5-5 5 5 5-5M4 16v4h16v-4"></path></svg>
+      </button>
+      <button id="print-pdf" class="icon-button print-button" type="button" title="Print (⌘/Ctrl+P)" aria-label="Print PDF" aria-keyshortcuts="Meta+P Control+P" disabled>
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7 8V4h10v4M7 17H5a2 2 0 0 1-2-2v-4a3 3 0 0 1 3-3h12a3 3 0 0 1 3 3v4a2 2 0 0 1-2 2h-2"></path><rect x="7" y="14" width="10" height="6" rx="1"></rect><path d="M17.5 11h.01"></path></svg>
+      </button>
       <button id="choose-file" class="quiet-button" type="button" title="Choose another PDF">Choose file</button>
       <button id="open-native" class="quiet-button" type="button" title="Open in Chrome's built-in PDF viewer">Chrome view</button>
-      <button id="open-chat" class="primary-button" type="button">Chat with PDF</button>
+      <button id="open-chat" class="primary-button" type="button" aria-controls="pdf-chat" aria-expanded="false" disabled>Chat with PDF</button>
     </div>
+
+    <section id="pdf-search" class="pdf-search" role="search" aria-label="Search PDF" hidden>
+      <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="6.5"></circle><path d="m16 16 4 4"></path></svg>
+      <select id="search-mode" aria-label="PDF search mode" title="Choose exact or semantic PDF search">
+        <option value="exact">Exact</option>
+        <option value="semantic">Semantic</option>
+      </select>
+      <input id="search-input" type="search" placeholder="Find exact words or phrases…" aria-label="Search this PDF for exact words or phrases" autocomplete="off" spellcheck="false">
+      <output id="search-count" aria-live="polite">0 / 0</output>
+      <button id="search-previous" type="button" title="Previous result (Shift+Enter)" aria-label="Previous search result" disabled>↑</button>
+      <button id="search-next" type="button" title="Next result (Enter)" aria-label="Next search result" disabled>↓</button>
+      <button id="search-close" type="button" title="Close search (Escape)" aria-label="Close PDF search">×</button>
+    </section>
   </header>
 
-  <main id="viewer" class="viewer" aria-label="PDF document">
-    <section id="loading" class="state-card" aria-live="polite">
-      <span class="spinner" aria-hidden="true"></span>
-      <div><strong>Opening your PDF</strong><p id="loading-detail">Downloading the document locally…</p></div>
-    </section>
+  <div id="reader-layout" class="reader-layout">
+    <aside id="pdf-outline" class="pdf-outline" aria-label="Table of contents" hidden>
+      <header class="pdf-outline__header">
+        <div>
+          <strong>Contents</strong>
+          <span id="outline-status">Loading document outline…</span>
+        </div>
+        <button id="outline-close" class="pdf-outline__close" type="button" title="Close table of contents" aria-label="Close table of contents">×</button>
+      </header>
+      <nav id="outline-tree" class="pdf-outline__tree" aria-label="Document table of contents"></nav>
+    </aside>
 
-    <section id="error" class="state-card error-card" hidden>
+    <main id="viewer" class="viewer" aria-label="PDF document" aria-keyshortcuts="ArrowUp ArrowDown ArrowLeft ArrowRight PageUp PageDown Home End">
+      <section id="loading" class="state-card" aria-live="polite">
+        <span class="spinner" aria-hidden="true"></span>
+        <div><strong>Opening your PDF</strong><p id="loading-detail">Downloading the document locally…</p></div>
+      </section>
+
+      <section id="error" class="state-card error-card" hidden>
+        <div class="state-copy">
+          <strong id="error-title">Scholia could not open this PDF address</strong>
+          <p id="error-message"></p>
+          <form id="manual-pdf-form" class="pdf-address-form" novalidate>
+            <label for="pdf-address">PDF address</label>
+            <div>
+              <input id="pdf-address" type="url" inputmode="url" autocomplete="url" spellcheck="false" placeholder="https://example.com/paper.pdf">
+              <button id="open-address" class="primary-button" type="submit">Open address</button>
+            </div>
+            <small>HTTP, HTTPS, and file addresses are supported. Signed download links stay in extension storage.</small>
+          </form>
+        </div>
+        <div class="error-actions">
+          <button id="error-open-original" class="quiet-button" type="button" hidden>Open original page</button>
+          <button id="error-choose-file" class="quiet-button" type="button">Choose a PDF file</button>
+        </div>
+      </section>
+
+      <div id="pages" class="pages pdfViewer"></div>
+    </main>
+  </div>
+
+  <aside id="pdf-chat" class="pdf-chat" aria-label="Chat with this PDF" hidden>
+    <header class="pdf-chat__header">
       <div>
-        <strong>Scholia could not open this PDF address</strong>
-        <p id="error-message"></p>
+        <span>Scholia</span>
+        <strong>Chat with this PDF</strong>
       </div>
-      <button id="error-choose-file" class="primary-button" type="button">Choose the PDF file</button>
-    </section>
+      <button id="pdf-chat-close" class="pdf-chat__close" type="button" title="Close PDF chat (Escape)" aria-label="Close PDF chat">×</button>
+    </header>
+    <div id="pdf-chat-content" class="pdf-chat__content" aria-label="Scholia PDF chat"></div>
+  </aside>
 
-    <div id="pages" class="pages pdfViewer"></div>
-  </main>
-
+  <div id="print-pages" class="print-pages" aria-hidden="true"></div>
   <input id="pdf-file" type="file" accept="application/pdf,.pdf" hidden>
   <script type="module" src="pdf-viewer.js"></script>
 </body>

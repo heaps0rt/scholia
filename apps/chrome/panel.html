@@ -6,16 +6,30 @@
   <title>Scholia</title>
   <link rel="stylesheet" href="vendor/katex/katex.min.css">
   <link rel="stylesheet" href="panel.css">
+  <link rel="stylesheet" href="file-attachments.css">
 </head>
 <body>
   <main class="shell">
     <header class="topbar">
-      <div class="brand"><span class="mark">S</span><div><h1>Scholia</h1><p>Understand what you are reading.</p></div></div>
+      <div id="home-brand" class="brand"><span class="mark">S</span><div><h1>Scholia</h1><p>Understand what you are reading.</p></div></div>
+      <button id="back-home" class="back-home" type="button" hidden><span aria-hidden="true">←</span><span>Home</span></button>
       <div class="topbar-actions">
+        <button id="expand-chat" class="icon-button" type="button" title="Open this chat in a full tab" aria-label="Open this chat in a full tab" hidden>
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M14 5h5v5M19 5l-7 7"></path><path d="M11 6H7a2 2 0 0 0-2 2v9a2 2 0 0 0 2 2h9a2 2 0 0 0 2-2v-4"></path></svg>
+        </button>
+        <button id="chat-search-toggle" class="icon-button" type="button" title="Search this chat (⌘/Ctrl+F)" aria-label="Search this chat" aria-controls="chat-search" aria-expanded="false" hidden>
+          <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="6.5"></circle><path d="m16 16 4 4"></path></svg>
+        </button>
         <button id="new-chat" class="icon-button" type="button" title="Start a new contextual chat" aria-label="Start a new contextual chat" hidden>＋</button>
         <button id="settings" class="icon-button" type="button" title="Provider settings" aria-label="Provider settings">⚙</button>
       </div>
     </header>
+
+    <div id="bridge-bar" class="bridge-bar" hidden>
+      <span id="bridge-status" role="status"></span>
+      <button id="bridge-start" class="text-button" type="button">Start bridge</button>
+      <button id="bridge-copy" class="text-button" type="button">Copy command</button>
+    </div>
 
     <div id="home-view" class="view home-view">
       <section class="context-card">
@@ -25,16 +39,41 @@
         <form id="context-form" class="ask-box">
           <label for="context-question">Chat with this content</label>
           <textarea id="context-question" rows="3" placeholder="Ask anything about this page…" required></textarea>
+          <fieldset class="context-mode-options">
+            <legend>Automatic context</legend>
+            <label class="scope-toggle context-toggle" for="context-mode">
+              <input id="context-mode" name="context-mode" type="radio" value="compact" checked>
+              <span><strong>Compact</strong><small>Read this page and send about 6,000 question-relevant characters.</small></span>
+            </label>
+            <label class="scope-toggle context-toggle" for="context-full">
+              <input id="context-full" name="context-mode" type="radio" value="full">
+              <span><strong>Full</strong><small>Include the larger page, PDF, or site context pack, up to about 24,000 characters.</small></span>
+            </label>
+            <label class="scope-toggle context-toggle context-none-toggle" for="context-none">
+              <input id="context-none" name="context-mode" type="radio" value="none">
+              <span><strong>None</strong><small>Send no automatic page, tab, PDF, or ChatGPT context; explicit text and images are still included.</small></span>
+            </label>
+          </fieldset>
           <label id="site-scope-row" class="scope-toggle" for="site-scope" hidden>
             <input id="site-scope" type="checkbox">
             <span><strong>Entire site</strong><small>Crawl same-site pages and search them locally for this question.</small></span>
           </label>
+          <label id="deep-page-row" class="scope-toggle" for="deep-page" hidden>
+            <input id="deep-page" type="checkbox">
+            <span><strong>Complete page</strong><small>Load lazy content, read embedded content, and include a full-page visual when the model supports images.</small></span>
+          </label>
           <div class="ask-actions">
+            <button id="choose-files" class="secondary compact-button" type="button">＋ Files</button>
             <button id="choose-image" class="secondary compact-button" type="button"><span aria-hidden="true">▧</span> Image</button>
             <button id="capture" class="secondary compact-button" type="button"><span aria-hidden="true">▣</span> Region</button>
             <button id="ask-context" class="primary compact-button" type="submit">Ask Scholia <span aria-hidden="true">↑</span></button>
           </div>
         </form>
+        <div id="course-index" hidden>
+          <p id="course-index-status" class="hint" role="status"></p>
+          <button id="course-index-refresh" class="secondary compact-button" type="button">Index / refresh course</button>
+          <button id="course-index-clear" class="secondary compact-button" type="button">Clear index</button>
+        </div>
         <p id="context-hint" class="hint">Page text is indexed locally and packed into relevant excerpts before it is sent.</p>
         <div id="pdf-viewer-actions" class="pdf-viewer-actions" hidden>
           <button id="open-pdf-viewer" class="secondary" type="button">Open selectable PDF view</button>
@@ -57,9 +96,24 @@
       </section>
 
       <section class="card compact model-card">
-        <span class="label">Active model</span>
-        <strong id="model">Loading…</strong>
-        <button id="model-settings" class="text-button" type="button">Change provider or model</button>
+        <div class="card-heading"><span class="label">Active model</span><button id="model-settings" class="text-button" type="button">Advanced settings</button></div>
+        <select id="model-select" aria-label="Active provider and model"></select>
+        <button id="fast-mode" class="fast-mode" type="button" aria-pressed="false">
+          <span aria-hidden="true">⚡</span><span>Fast mode</span><small id="fast-mode-state">Off</small>
+        </button>
+        <button id="web-search" class="fast-mode" type="button" aria-pressed="false">
+          <span aria-hidden="true">⊕</span><span>Web search</span><small id="web-search-state">Off</small>
+        </button>
+        <button id="learning-mode" class="fast-mode" type="button" aria-pressed="false" hidden title="Guide with graduated hints, or request a worked solution">
+          <span aria-hidden="true">◇</span><span>Guided learning</span><small id="learning-mode-state">Off</small>
+        </button>
+        <p id="model-hint" class="inline-hint">Model changes apply to new turns without leaving the sidebar.</p>
+      </section>
+
+      <section class="card compact history-card">
+        <div class="card-heading"><span class="label">Recent chats</span><button id="clear-chats" class="text-button danger-text" type="button" hidden>Clear all</button></div>
+        <div id="chat-history-list" class="chat-history-list"></div>
+        <p id="chat-history-empty" class="history-empty">No saved chats yet. Your conversations will appear here.</p>
       </section>
 
       <section class="card compact site-card">
@@ -83,6 +137,16 @@
         This chat stays grounded in its original source.
         <button id="chat-current-tab" class="text-button" type="button">Chat with the current tab</button>
       </div>
+
+      <section class="chat-controls" aria-label="Chat model controls">
+        <label class="chat-model-field" for="chat-model-select"><span>Model for next turn</span><select id="chat-model-select"></select></label>
+        <button id="chat-context-mode" class="chat-fast-mode" type="button" aria-pressed="true" title="Use compact automatic context"><span aria-hidden="true">▤</span> Compact</button>
+        <button id="chat-context-full" class="chat-fast-mode" type="button" aria-pressed="false" title="Use full automatic context"><span aria-hidden="true">▥</span> Full</button>
+        <button id="chat-context-none" class="chat-fast-mode" type="button" aria-pressed="false" title="Send no automatic context"><span aria-hidden="true">∅</span> None</button>
+        <button id="chat-fast-mode" class="chat-fast-mode" type="button" aria-pressed="false" title="Toggle Fast mode"><span aria-hidden="true">⚡</span> Fast</button>
+        <button id="chat-web-search" class="chat-fast-mode" type="button" aria-pressed="false" title="Toggle web search"><span aria-hidden="true">⊕</span> Web</button>
+        <button id="chat-learning-mode" class="chat-fast-mode" type="button" aria-pressed="false" hidden title="Guide with graduated hints, or request a worked solution"><span aria-hidden="true">◇</span> Learn</button>
+      </section>
 
       <section class="chat-source">
         <div class="source-heading">
@@ -109,21 +173,20 @@
         </div>
       </section>
 
-      <section id="capture-editor" class="capture-editor" hidden>
-        <div class="capture-copy"><strong>Select a region</strong><span>Drag on the visible-tab image, or use the full view.</span></div>
-        <div id="capture-stage" class="capture-stage">
-          <img id="capture-image" alt="Visible tab ready for region selection" draggable="false">
-          <div id="capture-selection" class="capture-selection" hidden></div>
-        </div>
-        <div class="button-row">
-          <button id="capture-cancel" class="secondary" type="button">Cancel</button>
-          <button id="capture-use" class="primary" type="button">Use full view</button>
-        </div>
+      <section id="chat-search" class="chat-search" role="search" aria-label="Search this chat" hidden>
+        <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="6.5"></circle><path d="m16 16 4 4"></path></svg>
+        <input id="chat-search-input" type="search" placeholder="Search messages…" aria-label="Search messages" autocomplete="off" spellcheck="false">
+        <output id="chat-search-count" aria-live="polite">0 / 0</output>
+        <button id="chat-search-previous" type="button" title="Previous result (Shift+Enter)" aria-label="Previous search result">↑</button>
+        <button id="chat-search-next" type="button" title="Next result (Enter)" aria-label="Next search result">↓</button>
+        <button id="chat-search-close" type="button" title="Close search (Escape)" aria-label="Close chat search">×</button>
       </section>
 
       <section id="messages" class="messages" aria-live="polite"></section>
 
       <form id="composer-form" class="composer">
+        <button id="chat-course-refresh" class="secondary compact-button" type="button" hidden>Refresh course index</button>
+        <div id="composer-files" hidden></div>
         <div id="composer-selection" class="composer-selection" hidden>
           <div>
             <strong id="composer-selection-label">Selected from the page</strong>
@@ -131,10 +194,19 @@
           </div>
           <button id="composer-selection-clear" type="button" title="Remove selected text" aria-label="Remove selected text">×</button>
         </div>
+        <div id="composer-image" class="composer-image" hidden>
+          <img id="composer-image-preview" alt="Attached image preview">
+          <div>
+            <strong>Image attached</strong>
+            <span id="composer-image-label">Selected image</span>
+          </div>
+          <button id="composer-image-clear" type="button" title="Remove attached image" aria-label="Remove attached image">×</button>
+        </div>
         <div class="composer-row">
-          <button id="attach-image" class="icon-button composer-attach" type="button" title="Choose an image" aria-label="Choose an image">▧</button>
+          <button id="attach-files" class="icon-button composer-attach" type="button" title="Choose an image" aria-label="Choose an image">▧</button>
           <button id="attach-region" class="icon-button composer-attach" type="button" title="Capture a visible region" aria-label="Capture a visible region">▣</button>
           <textarea id="composer" rows="1" placeholder="Ask a follow-up…" aria-label="Ask a follow-up"></textarea>
+          <button id="explain-capture" class="send-button explain-capture-button" type="submit" aria-label="Explain captured image" hidden>Explain</button>
           <button id="send" class="send-button" type="submit" aria-label="Send">↑</button>
         </div>
       </form>
@@ -154,19 +226,36 @@
       <input id="response-explain-question" type="text" placeholder="Ask about this…" aria-label="Ask about selected response text">
       <button id="response-explain-send" class="primary" type="button">Explain</button>
     </div>
+    <label id="response-explain-chatgpt" class="response-explain-context" hidden>
+      <input id="response-explain-chatgpt-toggle" type="checkbox">
+      <span>Include imported ChatGPT context</span>
+    </label>
+    <label id="response-explain-web-search" class="response-explain-context" hidden>
+      <input id="response-explain-web-search-toggle" type="checkbox">
+      <span>Search the web</span>
+    </label>
   </section>
 
   <div id="response-window-backdrop" class="response-window-backdrop" hidden>
     <section class="response-window" role="dialog" aria-modal="true" aria-label="Explanation of selected response text">
       <header class="response-window-header">
-        <div><span class="badge">Response explanation</span><strong>Explain selected text</strong></div>
-        <button id="response-window-close" class="icon-button" type="button" title="Back to sidebar chat" aria-label="Back to sidebar chat">←</button>
+        <div><span id="response-window-depth" class="badge">Response explanation</span><strong>Explain selected text</strong></div>
+        <div class="response-window-actions">
+          <button id="response-window-move" class="chat-fast-mode" type="button" title="Move this explanation to a full-page chat">Move to chat ↗</button>
+          <button id="response-window-web-search" class="chat-fast-mode" type="button" aria-pressed="false" title="Toggle web search"><span aria-hidden="true">⊕</span> Web</button>
+          <button id="response-window-close" class="icon-button" type="button" title="Back to sidebar chat" aria-label="Back to sidebar chat">←</button>
+        </div>
       </header>
       <blockquote id="response-window-source" class="response-window-source"></blockquote>
+      <p id="response-window-status" class="status" role="status" hidden></p>
       <main id="response-window-messages" class="response-window-messages" aria-live="polite"></main>
       <form id="response-window-form" class="response-window-composer">
+        <div id="response-window-files" hidden></div>
+        <div class="composer-row">
+        <button id="response-window-attach" class="icon-button composer-attach" type="button" aria-label="Attach files"></button>
         <textarea id="response-window-composer" rows="1" placeholder="Ask a follow-up…" aria-label="Ask a follow-up about this explanation"></textarea>
         <button id="response-window-send" class="send-button" type="submit" aria-label="Send">↑</button>
+        </div>
       </form>
     </section>
   </div>

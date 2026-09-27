@@ -1,0 +1,10 @@
+.scholia-file-list { display:flex;flex-wrap:wrap;gap:6px;min-width:0; }
+.scholia-file-chip { display:inline-flex;align-items:center;gap:6px;max-width:100%;min-width:0;border:1px solid var(--line,var(--scholia-line,#cbd5d1));border-radius:8px;padding:5px 7px;background:var(--soft,var(--scholia-card,#f1f5f2));color:var(--ink,var(--scholia-ink,#23352d));font-size:11px;line-height:1.4; }
+.scholia-file-chip > span { overflow:hidden;white-space:nowrap;text-overflow:ellipsis;min-width:0; }
+.scholia-file-chip img { width:28px;height:28px;object-fit:cover;border-radius:4px; }
+.scholia-file-chip small { opacity:.7; }
+.scholia-file-chip button { flex:none;border:0;background:transparent;color:inherit;cursor:pointer;padding:0 3px;font-size:16px; }
+.scholia-file-status { font-size:11px;line-height:1.45;margin-top:4px;overflow-wrap:anywhere; }
+.scholia-file-drag { outline:2px dashed var(--accent,var(--scholia-accent,#287358));outline-offset:-4px; }
+.scholia-file-drag textarea { background:color-mix(in srgb,#287358 12%,transparent); }
+.bubble > .scholia-file-chip,.scholia-bubble > .scholia-file-chip { margin:0 4px 7px 0; }

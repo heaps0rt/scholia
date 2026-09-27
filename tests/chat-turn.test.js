@@ -1,11 +1,25 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
+  canExplainImageDirectly,
   createUserTurn,
+  DEFAULT_IMAGE_EXPLANATION,
   normalizeSelectionAttachment,
+  normalizeTurnImageDataUrl,
   requestConversation,
   turnRequestContent
 } from '../apps/chrome/src/chat-turn.js';
+
+test('a fresh image capture can be explained without an added question', () => {
+  const capture = { kind: 'image', imageDataUrl: 'data:image/png;base64,aGVsbG8=' };
+  assert.equal(DEFAULT_IMAGE_EXPLANATION, 'Explain this image.');
+  assert.equal(canExplainImageDirectly({ ...capture }), true);
+  assert.equal(canExplainImageDirectly({ ...capture, question: '  Why?  ' }), false);
+  assert.equal(canExplainImageDirectly({ ...capture, messageCount: 1 }), false);
+  assert.equal(canExplainImageDirectly({ ...capture, hasAttachments: true }), false);
+  assert.equal(canExplainImageDirectly({ kind: 'text', imageDataUrl: capture.imageDataUrl }), false);
+  assert.equal(canExplainImageDirectly({ kind: 'image' }), false);
+});
 
 test('page and response selections become bounded, explicitly delimited turn context', () => {
   const attachment = normalizeSelectionAttachment({
@@ -37,7 +51,8 @@ test('an attachment already embedded in the source stays visible without duplica
 });
 
 test('request conversations use model-facing turn content and omit errors', () => {
-  const turn = createUserTurn('Go deeper.', { origin: 'page', text: 'a selected claim' });
+  const imageDataUrl = 'data:image/png;base64,aGVsbG8=';
+  const turn = createUserTurn('Go deeper.', { origin: 'page', text: 'a selected claim' }, { imageDataUrl });
   assert.deepEqual(requestConversation([
     { role: 'user', content: 'First question' },
     { role: 'assistant', content: 'First answer' },
@@ -46,6 +61,21 @@ test('request conversations use model-facing turn content and omit errors', () =
   ]), [
     { role: 'user', content: 'First question' },
     { role: 'assistant', content: 'First answer' },
-    { role: 'user', content: turn.requestContent }
+    { role: 'user', content: turn.requestContent, imageDataUrl }
   ]);
+});
+
+test('turn images are validated and stay attached to their own user message', () => {
+  const imageDataUrl = 'data:image/jpeg;base64,aGVsbG8=';
+  assert.equal(normalizeTurnImageDataUrl(imageDataUrl), imageDataUrl);
+  assert.equal(normalizeTurnImageDataUrl('javascript:alert(1)'), '');
+  assert.equal(normalizeTurnImageDataUrl('data:text/html;base64,aGVsbG8='), '');
+
+  const turn = createUserTurn('Inspect this region.', null, { imageDataUrl });
+  assert.equal(turn.imageDataUrl, imageDataUrl);
+  assert.deepEqual(requestConversation([turn]), [{
+    role: 'user',
+    content: 'Inspect this region.',
+    imageDataUrl
+  }]);
 });
