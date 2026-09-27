@@ -115,6 +115,7 @@ struct StudyAssignment: Identifiable {
     let dueDate: Date?
     var id: String { "\(course.id):\(material.id)" }
     var details: CanvasAssignmentDetails? { material.assignment }
+    var isHidden: Bool { course.hiddenAssignmentIDs?.contains(material.id) == true }
 
     func isUpcoming(at now: Date) -> Bool {
         guard let dueDate else { return false }
@@ -123,13 +124,15 @@ struct StudyAssignment: Identifiable {
 
     static func list(
         courses: [StudyCourse], query: String = "", includeCompleted: Bool = false, dueOnly: Bool = false,
-        hiddenOnly: Bool = false
+        includeHidden: Bool = false, hiddenOnly: Bool = false
     ) -> [Self] {
         let query = query.trimmingCharacters(in: .whitespacesAndNewlines)
         return courses.flatMap { course in
             course.materials.filter {
                 $0.kind == .assignments && $0.assignment?.requiresSubmission != false
-                    && (course.hiddenAssignmentIDs?.contains($0.id) == true) == hiddenOnly
+                    && (hiddenOnly
+                        ? course.hiddenAssignmentIDs?.contains($0.id) == true
+                        : includeHidden || course.hiddenAssignmentIDs?.contains($0.id) != true)
                     && (includeCompleted || $0.assignment?.status.isComplete != true)
                     && (!dueOnly || $0.assignment?.dueDate != nil)
                     && (query.isEmpty
@@ -164,7 +167,8 @@ struct StudyAssignmentGroup: Identifiable {
             })
         var groups: [Key: [StudyAssignment]] = [:]
         for item in StudyAssignment.list(
-            courses: courses, query: query, includeCompleted: true, hiddenOnly: filter == .hidden)
+            courses: courses, query: query, includeCompleted: true, includeHidden: filter == .all,
+            hiddenOnly: filter == .hidden)
         {
             let hasDeadline = item.dueDate != nil && item.details?.status.isComplete != true
             switch filter {

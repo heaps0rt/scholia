@@ -374,6 +374,7 @@ enum StudyDocumentImporter {
             original = data
             fileName = "original" + (ext.isEmpty ? ".txt" : ".\(ext)")
             pages = StudyFileFormats.code(text, name: name)
+            unreadable = text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? pages.count : 0
         } else if textExtensions.contains(ext) || ["tsv", "log", "bib", "srt", "vtt"].contains(ext)
             || (ext.isEmpty && String(data: data, encoding: .utf8)?.contains("\0") == false)
         {
@@ -406,6 +407,14 @@ enum StudyDocumentImporter {
             }
             if !chunk.isEmpty { pages.append(StudyPage(number: pages.count + 1, text: chunk)) }
             if pages.isEmpty { pages = [StudyPage(number: 1, text: "")] }
+        } else if !StudyFileFormats.previewExtensions.contains(ext), let text = safePlainText(data) {
+            // Simulation inputs and tables often use course-specific extensions.
+            // Display their contents as source text; never execute or interpret them.
+            kind = .code
+            original = data
+            fileName = "original" + (ext.isEmpty ? ".txt" : ".\(ext)")
+            pages = StudyFileFormats.code(text, name: name)
+            unreadable = text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? pages.count : 0
         } else {
             kind = .preview
             original = data
@@ -423,6 +432,16 @@ enum StudyDocumentImporter {
             try image.write(to: store.directory(for: id).appendingPathComponent(name), options: .atomic)
         }
         return document
+    }
+
+    static func safePlainText(_ data: Data) -> String? {
+        guard data.count <= maximumBytes, let text = String(data: data, encoding: .utf8),
+            text.utf16.count <= maximumCharacters,
+            text.unicodeScalars.allSatisfy({ scalar in
+                !CharacterSet.controlCharacters.contains(scalar) || [9, 10, 12, 13].contains(scalar.value)
+            })
+        else { return nil }
+        return text
     }
 
     private static func recognize(page: PDFPage) throws -> String {

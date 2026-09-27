@@ -536,7 +536,9 @@ private struct StudyReaderPane: View {
                                             separator: "\n\n")
                                     }
                                     return false
-                                }, selectionBusy: workspace.isStreaming,
+                                },
+                                selectionBusy: workspace.isStreaming
+                                    || (workspace.assignment != nil && workspace.canvasBusy),
                                 revision:
                                     "\(document.addedAt.timeIntervalSinceReferenceDate)-\(document.sourceVersion ?? "")"
                             )
@@ -1043,11 +1045,15 @@ private struct StudyTutorPane: View {
                         Circle().fill(workspace.documentIndex != nil ? Color.accentColor : Color.secondary.opacity(0.4))
                             .frame(width: 5, height: 5)
                         Text(
-                            workspace.document.map {
-                                $0.kind == .notebook
-                                    ? "Cell \(workspace.currentPage) · Full notebook context"
-                                    : "Page \(workspace.currentPage) · \($0.pageCount) pages indexed"
-                            } ?? (workspace.course == nil ? "Choose a course to begin" : "Course materials available")
+                            workspace.assignment != nil
+                                ? "Assignment instructions + included files"
+                                : workspace.document.map {
+                                    $0.kind == .notebook
+                                        ? "Cell \(workspace.currentPage) · Full notebook context"
+                                        : "Page \(workspace.currentPage) · \($0.pageCount) pages indexed"
+                                }
+                                    ?? (workspace.course == nil
+                                        ? "Choose a course to begin" : "Course materials available")
                         )
                         .font(.system(size: 10)).lineLimit(1)
                         Spacer()
@@ -1347,6 +1353,12 @@ private struct StudyTutorPane: View {
                 "The current page, your selection, and downloaded document text are prepared locally for each question. Long readings use relevant pages from the complete text index. Catalog-only materials are downloaded when you open them."
             )
             .font(.caption).foregroundStyle(.secondary)
+            if workspace.assignment != nil {
+                Text(
+                    "This assignment's instructions and readable included files are prepared for the companion, independently of the course-materials option below. Each file shows whether its content is ready."
+                )
+                .font(.caption).foregroundStyle(.secondary)
+            }
             Toggle("Include relevant course materials", isOn: $workspace.includeCourseContext).font(.caption)
             if !workspace.contextSummary.isEmpty { Text("Last question: \(workspace.contextSummary)").font(.caption) }
             Text(

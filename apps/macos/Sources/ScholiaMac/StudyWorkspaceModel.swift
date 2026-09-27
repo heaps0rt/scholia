@@ -41,6 +41,7 @@ final class StudyWorkspaceModel: ObservableObject {
     @Published private(set) var editingMessageID: UUID?
     @Published private(set) var assignmentText = ""
     @Published private(set) var assignmentNotice: String?
+    @Published private(set) var assignmentFileNotices: [String: String] = [:]
 
     let store: StudyLibraryStore
     let documentEditing: StudyEditingState
@@ -326,15 +327,33 @@ final class StudyWorkspaceModel: ObservableObject {
     var assignment: CanvasMaterialReference? {
         course?.materials.first { $0.id == library.selectedAssignmentID && $0.kind == .assignments }
     }
-    var assignmentPDFs: [CanvasMaterialReference] {
+    var assignmentFiles: [CanvasMaterialReference] {
         guard let course, let assignment else { return [] }
-        return (assignment.assignment?.linkedFileIDs ?? []).compactMap { id in
-            guard let file = course.materials.first(where: { $0.id == "files:\(id)" }),
-                (file.fileName ?? file.title).lowercased().hasSuffix(".pdf")
-                    || course.documents.contains(where: { $0.sourceKey == file.id && $0.kind == .pdf })
-            else { return nil }
-            return file
+        return (assignment.assignment?.linkedFileIDs ?? []).map { id in
+            course.materials.first(where: { $0.id == "files:\(id)" })
+                ?? CanvasMaterialReference(
+                    id: "files:\(id)", kind: .files, remoteID: id, title: "Canvas file \(id)",
+                    sourceURL: "\(course.canvasOrigin ?? "")/courses/\(course.canvasID ?? 0)/files/\(id)", version: "")
         }
+    }
+    var assignmentPDFs: [CanvasMaterialReference] {
+        assignmentFiles.filter { file in
+            (file.fileName ?? file.title).lowercased().hasSuffix(".pdf")
+                || course?.documents.contains(where: { $0.sourceKey == file.id && $0.kind == .pdf }) == true
+        }
+    }
+    func assignmentFileStatus(_ file: CanvasMaterialReference) -> String {
+        if fetchingMaterialID == file.id { return "Preparing…" }
+        if let notice = assignmentFileNotices[file.id] { return notice }
+        if let saved = course?.documents.first(where: { $0.sourceKey == file.id }),
+            FileManager.default.fileExists(atPath: store.file(for: saved).path)
+        {
+            let availability =
+                saved.kind == .preview || saved.unreadablePages == saved.pageCount
+                ? "Saved · no readable text for companion" : "Ready for companion"
+            return document?.id == saved.id ? "Open · \(availability)" : availability
+        }
+        return file.unavailableReason ?? "Not downloaded"
     }
     var thread: StudyThread? { course?.threads.first { $0.id == library.selectedThreadID } }
     var messages: [ConversationMessage] { thread?.messages ?? [] }
@@ -343,6 +362,7 @@ final class StudyWorkspaceModel: ObservableObject {
     var currentPageText: String { documentIndex?.pages.first { $0.number == currentPage }?.text ?? "" }
     var canSend: Bool {
         course != nil && (document == nil || documentIndex != nil) && !isStreaming
+            && (assignment == nil || !canvasBusy)
             && (!draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || draftImage != nil)
     }
 
@@ -500,8 +520,15 @@ final class StudyWorkspaceModel: ObservableObject {
     func navigate(to source: StudySource) {
         guard course?.documents.contains(where: { $0.id == source.documentID }) == true else { return }
         recordNavigation()
-        // Keep the conversation visible when following a citation into another document.
-        library.selectedAssignmentID = nil
+        // Keep the conversation and assignment context when following an included-file citation.
+        let target = course?.documents.first { $0.id == source.documentID }
+        let linkedKeys = Set((assignment?.assignment?.linkedFileIDs ?? []).map { "files:\($0)" })
+        if let key = target?.sourceKey, key == assignment?.id || linkedKeys.contains(key) {
+            library.selectedAssignmentFileID = linkedKeys.contains(key) ? key : nil
+        } else {
+            library.selectedAssignmentID = nil
+            library.selectedAssignmentFileID = nil
+        }
         library.selectedDocumentID = source.documentID
         loadSelectedDocument()
         setPage(source.page)
@@ -707,6 +734,8 @@ final class StudyWorkspaceModel: ObservableObject {
         let selection = selectedText
         let store = store
         let includeCourse = includeCourseContext
+        let assignment = assignment
+        let assignmentFileNotices = assignmentFileNotices
         let mode = mode
         contextSummary = "Reading your sources…"
         save()
@@ -716,7 +745,8 @@ final class StudyWorkspaceModel: ObservableObject {
                 let prepared = await Task.detached(priority: .userInitiated) {
                     let pack = StudyContextBuilder.build(
                         document: doc, index: index, currentPage: page, question: question,
-                        selection: selection, course: course, store: store, includeCourse: includeCourse)
+                        selection: selection, course: course, store: store, includeCourse: includeCourse,
+                        assignment: assignment, assignmentFileNotices: assignmentFileNotices)
                     let images =
                         configuration.studyImageInputAllowed
                         ? doc.map { StudyContextBuilder.pageImages(document: $0, pages: pack.imagePages, store: store) }
@@ -1068,8 +1098,7 @@ final class StudyWorkspaceModel: ObservableObject {
         assignmentText = assignmentText.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
-    /// The assignment remains the navigation target while its PDF is downloaded.
-    /// A late response can update the cache, but cannot reopen a page the user left.
+    /// Keep the assignment selected while its reader and companion files become available.
     func openAssignment(
         _ reference: CanvasMaterialReference, courseID: UUID, fileID: String? = nil, clientOverride: CanvasClient? = nil
     ) {
@@ -1084,26 +1113,32 @@ final class StudyWorkspaceModel: ObservableObject {
         library.selectedAssignmentID = reference.id
         library.selectedAssignmentFileID = requestedFileID
         assignmentNotice = nil
+        assignmentFileNotices = [:]
         loadAssignmentText()
         save()
         guard reference.unavailableReason == nil else {
             assignmentNotice = reference.unavailableReason
             return
         }
-        let initialPDF = requestedFileID.flatMap { id in assignmentPDFs.first { $0.id == id } } ?? assignmentPDFs.first
-        if let initialPDF, let cached = target.documents.first(where: { $0.sourceKey == initialPDF.id }),
+        let initial =
+            requestedFileID.flatMap { id in assignmentFiles.first { $0.id == id } }
+            ?? assignmentPDFs.first ?? assignmentFiles.first
+        if let initial, let cached = target.documents.first(where: { $0.sourceKey == initial.id }),
             FileManager.default.fileExists(atPath: store.file(for: cached).path)
         {
+            library.selectedAssignmentFileID = initial.id
             selectDocument(cached.id, assignmentID: reference.id, recordHistory: false)
         }
         guard !canvasBusy, canSave else {
-            assignmentNotice = "A sync is running. Retry after it finishes to load any missing assignment files."
+            assignmentNotice = "A sync is running. Retry after it finishes to prepare missing assignment files."
             return
         }
         canvasBusy = true
         canvasActivityCourseID = courseID
         error = nil
-        canvasStatus = "Opening \(reference.title)…"
+        canvasStatus = "Preparing \(reference.title)…"
+        let openingDocumentID = library.selectedDocumentID
+        let openingFileID = library.selectedAssignmentFileID
         canvasTask = Task { [weak self] in
             guard let self else { return }
             defer {
@@ -1126,8 +1161,7 @@ final class StudyWorkspaceModel: ObservableObject {
                 guard
                     let document = library.courses.first(where: { $0.id == courseID })?.documents.first(where: {
                         $0.sourceKey == material.id
-                    }),
-                    material.version.isEmpty || document.sourceVersion == material.version,
+                    }), material.version.isEmpty || document.sourceVersion == material.version,
                     FileManager.default.fileExists(atPath: store.file(for: document).path)
                 else { return nil }
                 return document
@@ -1139,9 +1173,13 @@ final class StudyWorkspaceModel: ObservableObject {
                 try Task.checkCancellation()
                 guard stillSelected() else { return }
                 loadAssignmentText()
-                // Module-only catalogs can omit file names. Resolve explicit links
-                // through Canvas's authenticated API before deciding which are PDFs.
-                for id in (assignment?.assignment?.linkedFileIDs ?? []).prefix(50) {
+                let linkedIDs = assignment?.assignment?.linkedFileIDs ?? []
+                var resolveIDs = Array(linkedIDs.prefix(50))
+                if let fileID, let id = linkedIDs.first(where: { "files:\($0)" == fileID }), !resolveIDs.contains(id) {
+                    resolveIDs.insert(id, at: 0)
+                }
+                for id in resolveIDs {
+                    try Task.checkCancellation()
                     guard stillSelected() else { return }
                     if course?.materials.first(where: { $0.id == "files:\(id)" })?.fileName != nil { continue }
                     do {
@@ -1155,45 +1193,149 @@ final class StudyWorkspaceModel: ObservableObject {
                     } catch {
                         try Task.checkCancellation()
                         if stillSelected() {
-                            assignmentNotice = "Some linked files could not be loaded. Retry when Canvas is available."
+                            assignmentFileNotices["files:\(id)"] = "Unavailable: \(error.localizedDescription)"
                         }
                     }
                 }
                 guard stillSelected() else { return }
-                let pdf = requestedFileID.flatMap { id in assignmentPDFs.first { $0.id == id } } ?? assignmentPDFs.first
-                if let pdf {
-                    library.selectedAssignmentFileID = pdf.id
-                    if let reason = pdf.unavailableReason { throw StudyError.message(reason) }
-                    let document: StudyDocument
-                    if let existing = cached(pdf) {
-                        document = existing
-                    } else {
-                        document = try await fetchMaterial(pdf, courseID: courseID, client: client())
-                    }
-                    try Task.checkCancellation()
-                    if stillSelected() { selectDocument(document.id, assignmentID: reference.id, recordHistory: false) }
+                let files = assignmentFiles
+                let selected =
+                    requestedFileID.flatMap { id in files.first { $0.id == id } }
+                    ?? assignmentPDFs.first ?? files.first
+                var expectedFileID = openingFileID
+                if library.selectedDocumentID == openingDocumentID && library.selectedAssignmentFileID == openingFileID
+                {
+                    library.selectedAssignmentFileID = selected?.id
+                    expectedFileID = selected?.id
                 }
-                if stillSelected() { canvasStatus = "\(reference.title) is ready." }
+                let automaticIDs = Set(files.prefix(50).map(\.id))
+                let ordered = selected.map { [$0] } ?? []
+                var automaticBytes = 0
+                for file in ordered + files.filter({ $0.id != selected?.id }) {
+                    try Task.checkCancellation()
+                    guard stillSelected() else { return }
+                    let explicitlyOpened = file.id == fileID
+                    let existing = cached(file)
+                    if !explicitlyOpened && !automaticIDs.contains(file.id) {
+                        if existing == nil {
+                            assignmentFileNotices[file.id] =
+                                "Not prepared: automatic limit is 50 files. Open to download."
+                        }
+                        continue
+                    }
+                    if existing == nil, !explicitlyOpened {
+                        if let size = file.byteCount, size > 20_000_000 {
+                            assignmentFileNotices[file.id] = "Not prepared: larger than 20 MB. Open to download."
+                            continue
+                        }
+                        if automaticBytes >= 50_000_000 || (file.byteCount ?? 0) > 50_000_000 - automaticBytes {
+                            assignmentFileNotices[file.id] =
+                                "Not prepared: assignment download limit reached. Open to download."
+                            continue
+                        }
+                    }
+                    if let reason = file.unavailableReason {
+                        assignmentFileNotices[file.id] = reason
+                        continue
+                    }
+                    if file.fileName == nil, assignmentFileNotices[file.id] != nil { continue }
+                    let limit =
+                        explicitlyOpened
+                        ? StudyDocumentImporter.maximumBytes : min(20_000_000, 50_000_000 - automaticBytes)
+                    var received = 0
+                    do {
+                        let saved: StudyDocument
+                        if let existing {
+                            saved = try await indexCachedAssignmentText(existing, file: file, courseID: courseID)
+                        } else {
+                            saved = try await fetchMaterial(
+                                file, courseID: courseID, client: client(), maximumBytes: limit
+                            ) { received = $0 }
+                        }
+                        if !explicitlyOpened { automaticBytes += received }
+                        guard stillSelected() else { return }
+                        if file.id == selected?.id, library.selectedDocumentID == openingDocumentID,
+                            library.selectedAssignmentFileID == expectedFileID
+                        {
+                            selectDocument(saved.id, assignmentID: reference.id, recordHistory: false)
+                        }
+                    } catch {
+                        try Task.checkCancellation()
+                        if !explicitlyOpened { automaticBytes += received == 0 ? limit : received }
+                        if stillSelected() {
+                            assignmentFileNotices[file.id] = "Unavailable: \(error.localizedDescription)"
+                        }
+                    }
+                }
+                if stillSelected() {
+                    if !assignmentFileNotices.isEmpty {
+                        assignmentNotice =
+                            "Some included files are not ready for the companion. See each file's status."
+                    }
+                    canvasStatus = "\(reference.title) is ready."
+                }
             } catch {
                 if stillSelected() {
                     loadAssignmentText()
                     assignmentNotice =
                         error is CancellationError
-                        ? "Opening stopped. Saved instructions and PDFs are still available."
-                        : "Could not load all assignment files. \(error.localizedDescription)"
+                        ? "Preparation stopped. Saved instructions and files are still available."
+                        : "Could not prepare this assignment. \(error.localizedDescription)"
                     canvasStatus = assignmentNotice
                 }
             }
         }
     }
 
-    func openAssignmentPDF(_ id: String) {
-        guard let assignment, let course, assignmentPDFs.contains(where: { $0.id == id }) else { return }
+    func openAssignmentFile(_ id: String) {
+        guard let assignment, let course, assignmentFiles.contains(where: { $0.id == id }) else { return }
         openAssignment(assignment, courseID: course.id, fileID: id)
     }
 
+    func openAssignmentPDF(_ id: String) { openAssignmentFile(id) }
+
+    private func indexCachedAssignmentText(
+        _ document: StudyDocument, file: CanvasMaterialReference, courseID: UUID
+    ) async throws -> StudyDocument {
+        guard document.kind == .preview else { return document }
+        let store = store
+        let name = file.fileName ?? document.originalFileName ?? document.fileName
+        guard !StudyFileFormats.previewExtensions.contains(URL(fileURLWithPath: name).pathExtension.lowercased()) else {
+            return document
+        }
+        let staging = StudyDocumentStaging(destination: store)
+        defer { staging.discard() }
+        let job = Task.detached(priority: .utility) { () throws -> StudyDocument? in
+            let data = try Data(contentsOf: store.file(for: document))
+            guard StudyDocumentImporter.safePlainText(data) != nil else { return nil }
+            return try StudyDocumentImporter.read(data: data, name: name, store: staging.store, id: document.id)
+        }
+        guard
+            let indexed = try await withTaskCancellationHandler(
+                operation: { try await job.value }, onCancel: { job.cancel() })
+        else {
+            return document
+        }
+        try Task.checkCancellation()
+        guard let ci = library.courses.firstIndex(where: { $0.id == courseID }),
+            let di = library.courses[ci].documents.firstIndex(where: { $0.id == document.id })
+        else { throw CancellationError() }
+        try staging.commit(indexed, to: store)
+        var saved = document
+        saved.kind = indexed.kind
+        saved.fileName = indexed.fileName
+        saved.pageCount = indexed.pageCount
+        saved.unreadablePages = indexed.unreadablePages
+        saved.contentHash = indexed.contentHash
+        saved.contentNotice = indexed.contentNotice
+        saved.originalFileName = name
+        library.courses[ci].documents[di] = saved
+        return saved
+    }
+
     private func fetchMaterial(
-        _ reference: CanvasMaterialReference, courseID: UUID, client: CanvasClient, background: Bool = false
+        _ reference: CanvasMaterialReference, courseID: UUID, client: CanvasClient, background: Bool = false,
+        maximumBytes: Int = StudyDocumentImporter.maximumBytes, onDownload: ((Int) -> Void)? = nil
     ) async throws -> StudyDocument {
         guard var ci = library.courses.firstIndex(where: { $0.id == courseID }),
             let remoteID = library.courses[ci].canvasID
@@ -1219,10 +1361,11 @@ final class StudyWorkspaceModel: ObservableObject {
         if let text = item.text {
             data = Data(text.utf8)
         } else if let url = item.downloadURL {
-            data = try await client.download(url, limit: background ? 10_000_000 : StudyDocumentImporter.maximumBytes)
+            data = try await client.download(url, limit: background ? min(10_000_000, maximumBytes) : maximumBytes)
         } else {
             throw StudyError.message("This material is unavailable.")
         }
+        onDownload?(data.count)
         try Task.checkCancellation()
         // Preserve local edits separately when a newer Canvas original arrives.
         let preserveLocal = previous?.locallyEditedAt != nil

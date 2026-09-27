@@ -220,7 +220,7 @@ export class Canvas {
       },
     };
   }
-  async material(ref, course) {
+  async material(ref, course, { limit = 100_000_000 } = {}) {
     const item = (
       await this.api(
         `/api/v1/courses/${course.canvasID}/${ref.kind}/${encodeURIComponent(ref.remoteID)}${ref.kind === 'assignments' ? '?include[]=submission' : ''}`
@@ -235,15 +235,22 @@ export class Canvas {
         name: `${reference.title}.md`,
         data: Buffer.from(htmlText(item.description || item.body)),
       };
+    if (Number(item.size) > limit) throw new Error('The file exceeds the download limit.');
     const url = new URL(item.url);
     const result = await this.request(url, {
       redirects: true,
       signal: this.signal,
       headers: url.origin === this.origin ? { Authorization: `Bearer ${this.token}` } : {},
-      limit: 100_000_000,
+      limit,
+    }).catch((error) => {
+      // An interrupted transfer may already have consumed its full allowance.
+      error.downloadedBytes = limit;
+      throw error;
     });
     if (result.status < 200 || result.status >= 300)
-      throw new Error(`Download returned HTTP ${result.status}.`);
+      throw Object.assign(new Error(`Download returned HTTP ${result.status}.`), {
+        downloadedBytes: result.data.length,
+      });
     return { reference, name: reference.fileName, data: result.data };
   }
 }

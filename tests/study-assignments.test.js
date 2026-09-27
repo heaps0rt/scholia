@@ -1,5 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { parseHTML } from 'linkedom';
 import { assignmentList, assignmentStatus, assignmentAvailability, assignmentDate, assignmentsMarkup, assignmentAgendaMarkup, assignmentGroups, assignmentPageMarkup, selectedAssignment, submissionBadgeMarkup } from '../apps/web/assignments.js';
 import { courseLibraryMarkup, courseLibraryRenderKey } from '../apps/web/course-library.js';
 import { readerRenderKey } from '../apps/web/study-session.js';
@@ -14,7 +15,7 @@ test('date headers collect deadlines on the same local calendar day without merg
   assert.match(assignmentAgendaMarkup([course], { filter: 'all', now }), /class="agenda-date" data-due-date="2026-10-02"/);
 });
 
-test('hidden assignments leave ordinary lists, stay restorable and do not change other workspaces', () => {
+test('hidden assignments leave ordinary lists, stay accessible and do not change other workspaces', () => {
   const state = fixture(), course = state.library.courses[0];
   const before = courseLibraryRenderKey(state), readerBefore = readerRenderKey(state);
   course.hiddenAssignmentIDs = ['later', 'submitted'];
@@ -22,11 +23,46 @@ test('hidden assignments leave ordinary lists, stay restorable and do not change
   assert.notEqual(readerRenderKey(state), readerBefore);
   assert.equal(assignmentList([course], { includeCompleted: true }).some((i) => i.material.id === 'later'), false);
   const hidden = assignmentAgendaMarkup([course], { filter: 'hidden', now });
-  assert.match(hidden, /Restore Exercise later/);
+  assert.match(hidden, /Unhide Exercise later/);
   assert.match(hidden, /data-hidden="false"/);
   assert.doesNotMatch(hidden, /data-assignment-id="locked"/);
   const other = { ...course, id: 'other', hiddenAssignmentIDs: [] };
   assert.equal(assignmentList([course, other]).filter((i) => i.material.id === 'later').length, 1);
+});
+
+test('All assignments includes hidden work and offers the correct visibility action in both lists', () => {
+  const course = fixture().library.courses[0];
+  const expected = assignmentList([course], { includeCompleted: true }).map((i) => i.material.id);
+  course.hiddenAssignmentIDs = ['later', 'submitted'];
+  assert.deepEqual(
+    assignmentList([course], { includeCompleted: true, includeHidden: true }).map((i) => i.material.id),
+    expected
+  );
+  assert.deepEqual(
+    assignmentList([course], { includeCompleted: true, includeHidden: true, hiddenOnly: true }).map((i) => i.material.id),
+    ['submitted', 'later']
+  );
+  for (const html of [
+    assignmentAgendaMarkup([course], { filter: 'all', now }),
+    assignmentsMarkup([course], { includeCompleted: true, now }),
+  ]) {
+    const { document } = parseHTML(html);
+    const rows = [...document.querySelectorAll('[data-assignment-id]')];
+    assert.deepEqual(rows.map((row) => row.dataset.assignmentId).sort(), [...expected].sort());
+    for (const row of rows) {
+      const hidden = course.hiddenAssignmentIDs.includes(row.dataset.assignmentId);
+      const button = row.querySelector('[data-action="assignmentVisibility"]');
+      assert.equal(button.textContent, hidden ? 'Unhide' : 'Hide');
+      assert.equal(button.dataset.hidden, String(!hidden));
+      assert.equal(!!row.querySelector('.assignment-hidden'), hidden);
+    }
+    assert.doesNotMatch(html, /Remove from list|Restore/);
+  }
+  const search = assignmentGroups([course], { filter: 'all', query: 'later', now });
+  assert.deepEqual(search.flatMap((group) => group.items.map((i) => i.material.id)), ['later']);
+  course.hiddenAssignmentIDs = [];
+  assert.ok(assignmentList([course]).some((i) => i.material.id === 'later'));
+  assert.equal(assignmentGroups([course], { filter: 'hidden', now }).length, 0);
 });
 
 const now = new Date('2026-09-27T10:00:00Z');
@@ -172,21 +208,39 @@ test('the assignment agenda uses one assignment target for the title, course and
   }
 });
 
-test('assignment page keeps instructions, deadline and linked PDFs inside the workspace', () => {
+test('assignment page lists included files and their companion availability inside the workspace', () => {
   const state = fixture();
   state.library.selectedAssignmentID = 'later';
   state.library.selectedDocumentID = 'pdf-doc';
-  state.library.courses[0].documents.push({ id: 'pdf-doc', sourceKey: 'files:12', kind: 'pdf' });
+  state.library.courses[0].documents.push(
+    { id: 'pdf-doc', sourceKey: 'files:12', kind: 'pdf', pageCount: 2 },
+    { id: 'input-doc', sourceKey: 'files:14', kind: 'code', pageCount: 1 },
+    { id: 'binary-doc', sourceKey: 'files:15', kind: 'preview', pageCount: 1 }
+  );
   state.assignmentText = 'Solve **both problems**. <script>alert(1)</script>';
-  state.assignmentPDFs = [{ id: 'files:12', title: 'Exercises.pdf' }, { id: 'files:13', title: '<img src=x>.pdf' }];
+  state.assignmentFiles = [
+    { id: 'files:12', title: 'Exercises.pdf' }, { id: 'files:13', title: '<img src=x>.pdf' },
+    { id: 'files:14', title: 'in.nanowire' }, { id: 'files:15', title: 'data.bin' },
+    { id: 'files:16', title: 'Ni.eam' }, { id: 'files:17', title: 'oversized.pdf', byteCount: 100_000_001 },
+  ];
+  state.assignmentFileNotices = { 'files:16': 'Could not download <file>' };
   const html = assignmentPageMarkup(state);
   assert.match(html, /Exercise later/);
   assert.match(html, /Due /);
   assert.match(html, /<strong>both problems<\/strong>/);
-  assert.match(html, /data-action="assignmentPDF" data-id="files:12" data-assignment-id="later" data-course-id="c1" aria-pressed="true"/);
+  assert.match(html, /data-action="assignmentFile" data-id="files:12" data-assignment-id="later" data-course-id="c1" aria-pressed="true"/);
   assert.match(html, /data-id="files:13"[^>]+aria-pressed="false"/);
   assert.doesNotMatch(html, /<script|<img|target="_blank"|<iframe/);
   assert.match(html, /&lt;img/);
+  const { document } = parseHTML(html);
+  assert.equal(document.querySelectorAll('.assignment-file-list button').length, 6);
+  assert.match(document.querySelector('[data-id="files:14"]').textContent, /in.nanowire.*Ready for companion/);
+  assert.match(document.querySelector('[data-id="files:15"]').textContent, /No readable text/);
+  assert.match(document.querySelector('[data-id="files:13"]').textContent, /Open to add to companion/);
+  assert.match(document.querySelector('[data-id="files:16"]').textContent, /Could not download <file>/);
+  assert.ok(document.querySelector('[data-id="files:17"]').hasAttribute('disabled'));
+  state.busy = true;
+  assert.ok([...parseHTML(assignmentPageMarkup(state)).document.querySelectorAll('.assignment-file-list button')].every((button) => button.hasAttribute('disabled')));
   state.library.selectedCourseID = 'missing';
   assert.equal(selectedAssignment(state), undefined);
   assert.equal(assignmentPageMarkup(state), '');
@@ -196,10 +250,10 @@ test('assignment page distinguishes no attachment, loading, locked and failed do
   const state = fixture();
   state.library.selectedAssignmentID = 'later';
   state.library.courses[0].canvasMaterials[0].assignment.linkedFileIDs = [];
-  assert.match(assignmentPageMarkup(state), /No PDF is linked/);
+  assert.match(assignmentPageMarkup(state), /No files are linked/);
   state.busy = true;
   assert.match(assignmentPageMarkup(state), /Opening assignment files/);
-  assert.doesNotMatch(assignmentPageMarkup(state), /No PDF is linked/);
+  assert.doesNotMatch(assignmentPageMarkup(state), /No files are linked/);
   state.busy = false; state.assignmentNotice = 'Could not load all assignment files.';
   assert.match(assignmentPageMarkup(state), /data-action="assignment" data-id="later" data-course-id="c1" >Retry/);
   state.library.selectedAssignmentID = 'locked';

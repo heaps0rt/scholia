@@ -3,6 +3,7 @@ import { PROVIDERS } from '../../packages/core/src/providers.js';
 import { runCompletion } from '../chrome/src/provider-runtime.js';
 import { Canvas } from './canvas.js';
 import { hash } from './store.js';
+import { needsTextIndexUpgrade, unreadablePageCount } from './document-formats.js';
 export const hostedProviders = PROVIDERS.filter((p) =>
   ['openai', 'anthropic', 'openrouter', 'groq', 'together', 'mistral', 'cohere', 'ntnu'].includes(
     p.id
@@ -21,6 +22,29 @@ const newCourse = (name, code = '') => ({
   threads: [],
   canvasMaterials: [],
 });
+export function assignmentFileReferences(course, assignment) {
+  if (!assignment) return [];
+  const known = new Map(
+    (course.canvasMaterials || [])
+      .filter((ref) => ref.kind === 'files')
+      .map((ref) => [String(ref.remoteID), ref])
+  );
+  return [...new Set(assignment.assignment?.linkedFileIDs || [])]
+    .filter((id) => /^\d+$/.test(id))
+    .map((id) => {
+      if (known.has(String(id))) return known.get(String(id));
+      const saved = course.documents.find((document) => document.sourceKey === `files:${id}`);
+      return {
+        id: `files:${id}`,
+        kind: 'files',
+        remoteID: String(id),
+        title: saved?.title || `File ${id}`,
+        fileName: saved?.originalFileName || saved?.fileName,
+        version: saved?.sourceVersion || '',
+        sourceURL: `${course.canvasOrigin}/courses/${course.canvasID}/files/${id}`,
+      };
+    });
+}
 export function materialInventory(course) {
   if (!course) return { groups: [], files: [] };
   const groups = new Map(),
@@ -45,7 +69,8 @@ export function materialInventory(course) {
       submissionStatus: ref?.assignment?.status,
       requiresSubmission:
         !ref?.assignment ||
-        ref.assignment.submissionTypes.some((type) => !['none', 'not_graded'].includes(type)),
+        ref.assignment.submissionTypes?.some((type) => !['none', 'not_graded'].includes(type)) !==
+          false,
       updateAvailable: !!(doc && ref?.version && doc.sourceVersion !== ref.version),
     };
     let groupID, groupTitle;
@@ -186,7 +211,7 @@ export class Workspaces {
       threadID: thread?.id || null,
       page: nav.page || 1,
       revision: hash(
-        `${thread?.draft || ''}\0${nav.mode || 'Explain'}\0${nav.selection || ''}\0${thread?.draftImage || ''}`
+        `${nav.selectedAssignmentID || ''}\0${thread?.draft || ''}\0${nav.mode || 'Explain'}\0${nav.selection || ''}\0${thread?.draftImage || ''}`
       ),
     };
   }
@@ -204,12 +229,16 @@ export class Workspaces {
     const course = this.course(account, nav),
       doc = course?.documents.find((d) => d.id === nav.selectedDocumentID),
       thread = this.thread(course, nav);
-    const index = doc ? await this.documents.index(account.id, doc) : null;
+    const index = doc ? await this.documents.index(account.id, doc).catch(() => null) : null;
     const assignment = course?.canvasMaterials?.find((m) => m.id === nav.selectedAssignmentID),
       instructions = course?.documents.find((d) => d.sourceKey === assignment?.id);
     const assignmentText = instructions
-      ? (await this.documents.index(account.id, instructions)).pages.map((p) => p.text).join('\n\n')
+      ? (await this.documents.index(account.id, instructions).catch(() => ({ pages: [] }))).pages
+          .map((p) => p.text)
+          .join('\n\n')
       : '';
+    if (assignment) await this.normalizeAssignmentIndexes(account, course, assignment, doc, index);
+    const files = assignmentFileReferences(course, assignment);
     const inventory = materialInventory(course),
       provider =
         hostedProviders.find((p) => p.id === account.settings.providerID) || hostedProviders[0];
@@ -256,24 +285,27 @@ export class Workspaces {
       ),
       providerID: provider.id,
       modelID: account.settings.modelID || provider.defaultModel,
-      canSend: !!course && !account.streaming && !!(thread?.draft?.trim() || thread?.draftImage),
+      canSend:
+        !!course &&
+        !account.busy &&
+        !account.streaming &&
+        !!(thread?.draft?.trim() || thread?.draftImage),
       streaming: account.streaming,
       busy: account.busy,
       loadingDocument: false,
       status: account.status,
       warnings: account.library.courses.flatMap((c) => c.catalogWarnings || []),
       error: account.error,
-      context: doc
-        ? `Page ${page} · ${doc.pageCount} pages indexed`
-        : 'Your private course materials',
+      context: assignment
+        ? `${assignment.title} · ${files.filter((ref) => course.documents.some((document) => document.sourceKey === ref.id && document.kind !== 'preview' && (document.unreadablePages || 0) < document.pageCount)).length} of ${files.length} files indexed for the companion`
+        : doc
+          ? `Page ${page} · ${doc.pageCount} pages indexed`
+          : 'Your private course materials',
       includeCourse: nav.includeCourse !== false,
       assignmentText,
-      assignmentPDFs: (course?.canvasMaterials || []).filter(
-        (r) =>
-          r.kind === 'files' &&
-          /\.pdf$/i.test(r.fileName || '') &&
-          assignment?.assignment?.linkedFileIDs?.includes(r.remoteID)
-      ),
+      assignmentFiles: files,
+      assignmentPDFs: files.filter((ref) => /\.pdf$/i.test(ref.fileName || '')),
+      assignmentFileNotices: assignment ? this.assignmentNotices(course, assignment) : {},
       assignmentNotice: nav.assignmentNotice || null,
       draftOwner: this.owner(account, nav),
       learningRevision: 0,
@@ -329,21 +361,31 @@ export class Workspaces {
     course.documents.push(document);
     return document;
   }
-  async fetchMaterial(account, course, ref, canvas) {
+  async fetchMaterial(account, course, ref, canvas, options = {}) {
     if (
       course.canvasOrigin !== canvas.origin ||
       course.canvasUserID !== account.library.canvasUserID
     )
       fail('Reconnect the Canvas account that owns this workspace.');
     const existing = course.documents.find((d) => d.sourceKey === ref.id);
-    if (existing && existing.sourceVersion === ref.version) return existing;
-    const item = await canvas.material(ref, course);
+    if (existing && existing.sourceVersion === ref.version && !existing.indexUnavailable)
+      return existing;
+    const item = await canvas.material(ref, course, options);
+    canvas.signal?.throwIfAborted();
+    if (item.data.length > (options.limit || 100_000_000))
+      throw Object.assign(new Error('The file exceeds the download limit.'), {
+        downloadedBytes: item.data.length,
+      });
     Object.assign(ref, item.reference);
+    if (!course.canvasMaterials.some((material) => material.id === ref.id))
+      course.canvasMaterials.push(ref);
     const doc = await this.importFile(
       account,
       course,
       item.name,
-      item.data.length ? item.data : Buffer.from('No instructions provided.')
+      item.data.length || ref.kind === 'files'
+        ? item.data
+        : Buffer.from('No instructions provided.')
     );
     if (existing?.locallyEditedAt) {
       existing.sourceKey = null;
@@ -358,6 +400,278 @@ export class Workspaces {
     if (existing && !existing.locallyEditedAt)
       course.documents = course.documents.filter((d) => d.id !== existing.id);
     return doc;
+  }
+  assignmentNotices(course, assignment) {
+    course.assignmentFileNotices ||= {};
+    return (course.assignmentFileNotices[assignment.id] ||= {});
+  }
+  cachedMaterial(course, ref) {
+    return course.documents.find(
+      (document) =>
+        document.sourceKey === ref.id &&
+        document.sourceVersion === ref.version &&
+        !document.indexUnavailable
+    );
+  }
+  async normalizeAssignmentIndexes(account, course, assignment, selectedDocument, selectedIndex) {
+    const notices = this.assignmentNotices(course, assignment);
+    for (const ref of assignmentFileReferences(course, assignment)) {
+      const document = course.documents.find((doc) => doc.sourceKey === ref.id);
+      if (!document || Number.isInteger(document.unreadablePages)) continue;
+      try {
+        const index =
+          document.id === selectedDocument?.id
+            ? selectedIndex
+            : await this.documents.index(account.id, document);
+        document.unreadablePages = unreadablePageCount(index.pages);
+      } catch {
+        document.unreadablePages = document.pageCount;
+        document.indexUnavailable = true;
+        notices[ref.id] = 'The saved file could not be indexed. Open it to retry.';
+      }
+    }
+  }
+  async upgradeCachedDocument(account, document) {
+    const indexed = await this.documents.reindex(account.id, document);
+    for (const key of [
+      'kind',
+      'pageCount',
+      'unreadablePages',
+      'contentNotice',
+      'contentHash',
+      'indexVersion',
+    ])
+      document[key] = indexed[key];
+    document.indexUnavailable = false;
+    this.store.save(account);
+  }
+  async openAssignment(account, nav, command) {
+    const course =
+      account.library.courses.find((entry) => entry.id === command.courseID) ||
+      fail('Workspace not found.', 404);
+    const assignment =
+      course.canvasMaterials.find(
+        (ref) => ref.kind === 'assignments' && ref.id === (command.assignmentID || command.id)
+      ) || fail('Assignment not found.', 404);
+    const attachmentAction = command.action !== 'assignment';
+    if (attachmentAction) {
+      if (nav.selectedCourseID !== course.id || nav.selectedAssignmentID !== assignment.id)
+        fail('The assignment changed. Open the file from the current assignment.', 409);
+      if (!assignmentFileReferences(course, assignment).some((ref) => ref.id === command.id))
+        fail('File not linked to this assignment.', 404);
+    } else {
+      this.selectCourse(account, nav, course.id);
+      nav.selectedAssignmentID = assignment.id;
+    }
+    nav.assignmentNotice = null;
+    if (assignment.assignment?.locked) {
+      nav.assignmentNotice = 'Locked in Canvas.';
+      return;
+    }
+    const notices = this.assignmentNotices(course, assignment);
+    let canvas,
+      downloadedBytes = 0;
+    const attemptedFiles = [];
+    const connected = () => {
+      this.assertAvailable(account);
+      canvas ||= this.canvas(account);
+      if (
+        course.canvasOrigin !== canvas.origin ||
+        course.canvasUserID !== account.library.canvasUserID
+      )
+        fail('Reconnect the Canvas account that owns this workspace.');
+      return canvas;
+    };
+    if (!this.cachedMaterial(course, assignment)) {
+      try {
+        await this.fetchMaterial(account, course, assignment, connected());
+      } catch (error) {
+        nav.assignmentNotice = error.message;
+      }
+    }
+    const files = assignmentFileReferences(course, assignment);
+    if (attachmentAction && !files.some((ref) => ref.id === command.id))
+      fail('File no longer linked to this assignment.', 404);
+    let selected = attachmentAction
+      ? files.find((ref) => ref.id === command.id)
+      : files.find((ref) => /\.pdf$/i.test(ref.fileName || ''));
+    // Older catalogs may omit files linked directly from an assignment. Resolve those
+    // individually; one inaccessible attachment must not conceal the remaining files.
+    if (!selected && !attachmentAction) {
+      for (const ref of files.slice(0, 50).filter((file) => !file.fileName)) {
+        try {
+          const client = connected();
+          const item = (
+            await client.api(`/api/v1/courses/${course.canvasID}/files/${ref.remoteID}`)
+          ).value;
+          const resolved = client.reference('files', item, course.canvasID);
+          course.canvasMaterials.push(resolved);
+          delete notices[ref.id];
+          if (/\.pdf$/i.test(resolved.fileName || '')) {
+            selected = resolved;
+            break;
+          }
+        } catch (error) {
+          notices[ref.id] = error.message;
+        }
+      }
+    }
+    if (selected) {
+      try {
+        let document = this.cachedMaterial(course, selected);
+        if (!document) {
+          const limit = attachmentAction ? 100_000_000 : 20_000_000;
+          if (Number(selected.byteCount) > limit)
+            throw new Error(
+              attachmentAction
+                ? 'The file exceeds the 100 MB download limit.'
+                : 'Open this file to add it; it exceeds the 20 MB automatic download limit.'
+            );
+          document = await this.fetchMaterial(account, course, selected, connected(), { limit });
+          downloadedBytes = document.byteCount || 0;
+        }
+        if (needsTextIndexUpgrade(document) && !account.busy && !account.streaming)
+          await this.upgradeCachedDocument(account, document);
+        delete notices[selected.id];
+        this.selectDocument(course, nav, document.id, true);
+      } catch (error) {
+        downloadedBytes += error.downloadedBytes || 0;
+        attemptedFiles.push(selected.id);
+        notices[selected.id] = error.message;
+      }
+    }
+    this.prepareAssignmentFiles(account, course, assignment, downloadedBytes, attemptedFiles);
+  }
+  prepareAssignmentFiles(account, course, assignment, downloadedBytes = 0, attemptedFiles = []) {
+    if (account.busy || account.streaming) return;
+    const files = assignmentFileReferences(course, assignment),
+      notices = this.assignmentNotices(course, assignment);
+    for (const ref of files.slice(50))
+      if (!this.cachedMaterial(course, ref))
+        notices[ref.id] = 'Open this file to add it; automatic preparation is limited to 50 files.';
+    const pending = files
+      .slice(0, 50)
+      .filter(
+        (ref) =>
+          !attemptedFiles.includes(ref.id) &&
+          (!this.cachedMaterial(course, ref) ||
+            needsTextIndexUpgrade(this.cachedMaterial(course, ref)))
+      );
+    if (!pending.length) return;
+    this.job(account, 'Preparing assignment files…', async (signal) => {
+      let remaining = Math.max(0, 50_000_000 - downloadedBytes),
+        canvas;
+      for (const ref of pending) {
+        signal.throwIfAborted();
+        const cached = this.cachedMaterial(course, ref);
+        if (cached) {
+          try {
+            await this.upgradeCachedDocument(account, cached);
+            delete notices[ref.id];
+          } catch (error) {
+            notices[ref.id] = `${error.message} Open this file to retry.`;
+          }
+          continue;
+        }
+        const limit = Math.min(20_000_000, remaining);
+        if (!limit || Number(ref.byteCount) > limit) {
+          notices[ref.id] =
+            Number(ref.byteCount) > 20_000_000
+              ? 'Open this file to add it; it exceeds the 20 MB automatic download limit.'
+              : 'Open this file to add it; the 50 MB automatic download budget was reached.';
+          continue;
+        }
+        try {
+          canvas ||= this.canvas(account, signal);
+          if (
+            course.canvasOrigin !== canvas.origin ||
+            course.canvasUserID !== account.library.canvasUserID
+          )
+            fail('Reconnect the Canvas account that owns this workspace.');
+          account.status = `Preparing ${ref.fileName || ref.title}…`;
+          const document = await this.fetchMaterial(account, course, ref, canvas, { limit });
+          remaining -= document.byteCount || 0;
+          delete notices[ref.id];
+          this.store.save(account);
+        } catch (error) {
+          signal.throwIfAborted();
+          remaining -= Math.min(limit, error.downloadedBytes || 0);
+          notices[ref.id] = `${error.message} Open this file to retry.`;
+        }
+      }
+      account.status = Object.keys(notices).length
+        ? 'Assignment opened. Some files need attention.'
+        : 'Assignment files are ready.';
+    });
+  }
+  async assignmentContext(account, course, assignment, question, selectedDocument, selectedPage) {
+    const files = assignmentFileReferences(course, assignment),
+      documents = [];
+    const instructions = course.documents.find((document) => document.sourceKey === assignment.id);
+    if (instructions) documents.push({ document: instructions, label: 'Assignment instructions' });
+    const manifest = [
+      `Assignment: ${assignment.title}`,
+      'The following file list describes availability. Only the indexed excerpts below are available to you. Do not infer contents from a filename.',
+    ];
+    for (const ref of files) {
+      const document = course.documents.find((doc) => doc.sourceKey === ref.id);
+      const readable =
+        document &&
+        document.kind !== 'preview' &&
+        (document.unreadablePages || 0) < document.pageCount &&
+        !document.indexUnavailable;
+      const status = !document
+        ? 'not downloaded; contents unavailable'
+        : readable
+          ? 'saved and text indexed'
+          : 'saved original; no readable text available';
+      manifest.push(`- ${ref.fileName || ref.title}: ${status}`);
+      if (readable) documents.push({ document, label: ref.fileName || ref.title });
+    }
+    if (!instructions) manifest.push('Assignment instructions have not been downloaded.');
+    let context = manifest.join('\n').slice(0, 8000) + '\n\n',
+      sources = [];
+    const keywords = [...new Set(question.toLowerCase().match(/[\p{L}\p{N}_]{3,}/gu) || [])].slice(
+      0,
+      40
+    );
+    for (const [position, entry] of documents.entries()) {
+      const allowance = Math.floor((48_000 - context.length) / (documents.length - position));
+      if (allowance <= 100) break;
+      try {
+        const index = await this.documents.index(account.id, entry.document);
+        const pages = index.pages
+          .filter((page) => page.text.trim())
+          .map((page) => {
+            const lower = page.text.toLowerCase();
+            return {
+              ...page,
+              score:
+                keywords.reduce((score, term) => score + Number(lower.includes(term)), 0) +
+                (entry.document.id === selectedDocument?.id && page.number === selectedPage
+                  ? 100
+                  : 0),
+            };
+          })
+          .sort((a, b) => b.score - a.score || a.number - b.number);
+        let excerpt = '';
+        for (const page of pages) {
+          const heading = `[${entry.label}, page ${page.number}]\n`,
+            remaining = allowance - excerpt.length - heading.length - 2;
+          if (remaining <= 0) break;
+          excerpt += heading + page.text.slice(0, remaining) + '\n\n';
+          sources.push({ documentID: entry.document.id, title: entry.label, page: page.number });
+        }
+        context += excerpt || `[${entry.label}: no readable text available]\n`;
+      } catch {
+        context += `[${entry.label}: saved text is currently unavailable]\n`;
+      }
+    }
+    return {
+      context: context.slice(0, 48_000),
+      sources,
+      documentIDs: new Set(documents.map(({ document }) => document.id)),
+    };
   }
   selectCourse(account, nav, id) {
     const course =
@@ -458,10 +772,23 @@ export class Workspaces {
           nav.selection = '';
           break;
         }
-        case 'source':
-          this.selectDocument(course, nav, command.id);
-          nav.page = Math.max(1, Number(command.page) || 1);
+        case 'source': {
+          const assignment = course?.canvasMaterials.find(
+            (ref) => ref.id === nav.selectedAssignmentID && ref.kind === 'assignments'
+          );
+          const source = course?.documents.find((document) => document.id === command.id);
+          const related =
+            assignment &&
+            (source?.sourceKey === assignment.id ||
+              assignmentFileReferences(course, assignment).some(
+                (ref) => ref.id === source?.sourceKey
+              ));
+          const threadID = nav.selectedThreadID;
+          const target = this.selectDocument(course, nav, command.id, !!related);
+          nav.selectedThreadID = threadID;
+          nav.page = Math.max(1, Math.min(target.pageCount, Number(command.page) || 1));
           break;
+        }
         case 'thread': {
           const thread =
             course?.threads.find((t) => t.id === command.id) ||
@@ -614,60 +941,10 @@ export class Workspaces {
           break;
         }
         case 'assignment':
-        case 'assignmentPDF': {
-          course =
-            account.library.courses.find((c) => c.id === command.courseID) ||
-            fail('Workspace not found.', 404);
-          const ref =
-            course.canvasMaterials.find(
-              (r) => r.kind === 'assignments' && r.id === (command.assignmentID || command.id)
-            ) || fail('Assignment not found.', 404);
-          this.selectCourse(account, nav, course.id);
-          nav.selectedAssignmentID = ref.id;
-          if (ref.assignment?.locked) {
-            nav.assignmentNotice = 'Locked in Canvas.';
-            break;
-          }
-          try {
-            const cached = course.documents.find(
-              (d) => d.sourceKey === ref.id && d.sourceVersion === ref.version
-            );
-            let canvas;
-            const connected = () => {
-              this.assertAvailable(account);
-              return (canvas ||= this.canvas(account));
-            };
-            if (!cached) await this.fetchMaterial(account, course, ref, connected());
-            for (const id of (ref.assignment?.linkedFileIDs || []).slice(0, 50))
-              if (!course.canvasMaterials.some((r) => r.id === `files:${id}`)) {
-                const item = (
-                  await connected().api(`/api/v1/courses/${course.canvasID}/files/${id}`)
-                ).value;
-                course.canvasMaterials.push(connected().reference('files', item, course.canvasID));
-              }
-            const pdfs = course.canvasMaterials.filter(
-              (r) =>
-                r.kind === 'files' &&
-                ref.assignment?.linkedFileIDs?.includes(r.remoteID) &&
-                /\.pdf$/i.test(r.fileName || '')
-            );
-            const pdf =
-              command.action === 'assignmentPDF'
-                ? pdfs.find((p) => p.id === command.id) ||
-                  fail('PDF not linked to this assignment.')
-                : pdfs[0];
-            if (pdf) {
-              const doc =
-                course.documents.find(
-                  (d) => d.sourceKey === pdf.id && d.sourceVersion === pdf.version
-                ) || (await this.fetchMaterial(account, course, pdf, connected()));
-              this.selectDocument(course, nav, doc.id, true);
-            }
-          } catch (error) {
-            nav.assignmentNotice = error.message;
-          }
+        case 'assignmentPDF':
+        case 'assignmentFile':
+          await this.openAssignment(account, nav, command);
           break;
-        }
         case 'edit': {
           const thread = this.thread(course, nav),
             index =
@@ -713,7 +990,12 @@ export class Workspaces {
               image = thread.draftImage,
               selection = nav.selection,
               page = nav.page || 1,
-              doc = course.documents.find((d) => d.id === nav.selectedDocumentID);
+              includeCourse = nav.includeCourse !== false,
+              mode = nav.mode,
+              doc = course.documents.find((d) => d.id === nav.selectedDocumentID),
+              assignment = course.canvasMaterials.find(
+                (ref) => ref.kind === 'assignments' && ref.id === nav.selectedAssignmentID
+              );
             thread.messages.push({
               id: randomUUID(),
               role: 'user',
@@ -738,19 +1020,26 @@ export class Workspaces {
               'Thinking…',
               async (signal) => {
                 try {
-                  const refs = doc ? [{ doc, page }] : [];
-                  if (nav.includeCourse !== false)
-                    for (const d of course.documents.filter((d) => d.id !== doc?.id).slice(0, 20))
+                  const assigned = assignment
+                    ? await this.assignmentContext(account, course, assignment, question, doc, page)
+                    : { context: '', sources: [], documentIDs: new Set() };
+                  const refs = doc && !assigned.documentIDs.has(doc.id) ? [{ doc, page }] : [];
+                  if (includeCourse)
+                    for (const d of course.documents
+                      .filter((d) => d.id !== doc?.id && !assigned.documentIDs.has(d.id))
+                      .slice(0, 20))
                       refs.push({ doc: d, page: 1 });
-                  let context = '',
-                    sources = [];
+                  let context = assigned.context,
+                    sources = assigned.sources,
+                    courseContext = '';
                   for (const ref of refs) {
                     const index = await this.documents.index(account.id, ref.doc),
                       text = index.pages.find((p) => p.number === ref.page)?.text || '';
-                    if (context.length >= 45000) break;
-                    context += `\n[${ref.doc.title}, page ${ref.page}]\n${text.slice(0, 12000)}\n`;
+                    if (courseContext.length >= 45000) break;
+                    courseContext += `\n[${ref.doc.title}, page ${ref.page}]\n${text.slice(0, 12000)}\n`;
                     sources.push({ documentID: ref.doc.id, title: ref.doc.title, page: ref.page });
                   }
+                  context += courseContext;
                   thread.sources[reply.id] = sources;
                   const payload = {
                     provider: provider.id,
@@ -759,7 +1048,7 @@ export class Workspaces {
                     selection,
                     context,
                     pageTitle: doc?.title || course.name,
-                    learningMode: nav.mode,
+                    learningMode: mode,
                     messages: thread.messages
                       .filter((m) => m !== reply)
                       .map((m) => ({

@@ -36,28 +36,46 @@ struct StudyAssignmentPageView: View {
                         RichMarkdownView(source: workspace.assignmentText)
                             .frame(maxWidth: .infinity, alignment: .leading).padding(.vertical, 8)
                     }
-                }.frame(maxHeight: workspace.document == nil ? .infinity : 135)
+                }.frame(maxHeight: workspace.document == nil ? .infinity : 90)
             }.font(.system(size: 12))
-            if !workspace.assignmentPDFs.isEmpty {
-                ScrollView(.horizontal) {
-                    HStack(spacing: 8) {
-                        ForEach(workspace.assignmentPDFs) { pdf in
-                            Button {
-                                workspace.openAssignmentPDF(pdf.id)
-                            } label: {
-                                Label(
-                                    pdf.title,
-                                    systemImage: workspace.document?.sourceKey == pdf.id
-                                        ? "checkmark.circle.fill" : "doc.richtext")
-                            }.disabled(workspace.canvasBusy || pdf.unavailableReason != nil)
-                                .help(pdf.unavailableReason ?? "Read PDF inside Scholia")
-                        }
-                    }.controlSize(.small)
-                }
+            if !workspace.assignmentFiles.isEmpty {
+                VStack(alignment: .leading, spacing: 7) {
+                    Text("Included files · \(workspace.assignmentFiles.count)")
+                        .font(.system(size: 11, weight: .semibold))
+                    ScrollView {
+                        LazyVStack(alignment: .leading, spacing: 7) {
+                            ForEach(workspace.assignmentFiles) { file in
+                                HStack(alignment: .top, spacing: 10) {
+                                    Image(
+                                        systemName: workspace.document?.sourceKey == file.id
+                                            ? "doc.text.fill" : "doc.text"
+                                    )
+                                    .foregroundStyle(Color.accentColor).padding(.top, 2)
+                                    VStack(alignment: .leading, spacing: 3) {
+                                        Text(file.fileName ?? file.title).font(.system(size: 11, weight: .medium))
+                                            .textSelection(.enabled)
+                                        Text(workspace.assignmentFileStatus(file)).font(.system(size: 10))
+                                            .foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                                    }
+                                    Spacer(minLength: 6)
+                                    Button(workspace.document?.sourceKey == file.id ? "Reading" : "Open") {
+                                        workspace.openAssignmentFile(file.id)
+                                    }.disabled(
+                                        workspace.canvasBusy || workspace.document?.sourceKey == file.id
+                                            || file.unavailableReason != nil
+                                    )
+                                    .help(
+                                        file.unavailableReason
+                                            ?? "Read \(file.fileName ?? file.title) with this assignment")
+                                }.padding(.vertical, 3)
+                            }
+                        }.padding(.trailing, 4)
+                    }.frame(height: min(170, CGFloat(workspace.assignmentFiles.count) * 48))
+                }.controlSize(.small)
             } else if !workspace.canvasBusy && assignment.assignment?.linkedFileIDs != nil
                 && workspace.assignmentNotice == nil
             {
-                Text("No PDF is linked to this assignment.").font(.system(size: 11)).foregroundStyle(.secondary)
+                Text("No files are linked to this assignment.").font(.system(size: 11)).foregroundStyle(.secondary)
             }
             if let notice = workspace.assignmentNotice {
                 HStack(alignment: .top) {
@@ -74,7 +92,8 @@ struct StudyAssignmentPageView: View {
                     }
                 }
             } else if workspace.canvasBusy {
-                ProgressView("Opening assignment files…").controlSize(.small).font(.system(size: 11))
+                ProgressView("Preparing assignment files for the companion…").controlSize(.small).font(
+                    .system(size: 11))
             }
         }.padding(20).frame(
             maxWidth: .infinity, maxHeight: workspace.document == nil ? .infinity : nil, alignment: .topLeading)

@@ -19,6 +19,7 @@ struct StudyContextPack: Sendable {
 enum StudyContextBuilder {
     static let documentBudget = 140_000
     static let courseBudget = 28_000
+    static let assignmentBudget = 48_000
 
     static func citedSources(in answer: String, allowed: [StudySource]) -> [StudySource] {
         guard let documentID = allowed.first?.documentID,
@@ -58,7 +59,8 @@ enum StudyContextBuilder {
     static func build(
         document: StudyDocument?, index: StudyDocumentIndex?, currentPage: Int,
         question: String, selection: String, course: StudyCourse,
-        store: StudyLibraryStore, includeCourse: Bool, budget: Int = documentBudget
+        store: StudyLibraryStore, includeCourse: Bool, assignment: CanvasMaterialReference? = nil,
+        assignmentFileNotices: [String: String] = [:], budget: Int = documentBudget
     ) -> StudyContextPack {
         let keywords = terms(question + " " + selection)
         var text = "Course: \(course.name)\n"
@@ -121,9 +123,21 @@ enum StudyContextBuilder {
                 ([current] + requested + ranked.prefix(1).map(\.number)).filter { imageSeen.insert($0).inserted }
                     .prefix(4))
         }
+        var assignmentDocumentIDs = Set<UUID>()
+        var assignmentSummary = ""
+        if let assignment {
+            let context = assignmentContext(
+                assignment, course: course, store: store, currentDocumentID: document?.id,
+                keywords: keywords, notices: assignmentFileNotices)
+            text += context.text
+            sources += context.sources
+            assignmentDocumentIDs = context.documentIDs
+            assignmentSummary = " · \(context.readableFiles) assignment file\(context.readableFiles == 1 ? "" : "s")"
+            if context.unavailableFiles > 0 { assignmentSummary += " · \(context.unavailableFiles) unavailable" }
+        }
         if includeCourse {
             var candidates: [(StudySource, String, Int)] = []
-            for other in course.documents where other.id != document?.id {
+            for other in course.documents where other.id != document?.id && !assignmentDocumentIDs.contains(other.id) {
                 guard let otherIndex = try? store.index(for: other) else { continue }
                 for page in otherIndex.pages {
                     let score = terms(page.text + " " + other.title).intersection(keywords).count
@@ -148,11 +162,137 @@ enum StudyContextBuilder {
         let currentCount = sources.filter { $0.documentID == document?.id }.count
         let summary =
             document == nil
-            ? "\(sources.count) course passages"
+            ? (assignment == nil ? "\(sources.count) course passages" : "Assignment context")
             : (whole ? "All \(pages.count) pages" : "\(currentCount) of \(pages.count) pages")
         return StudyContextPack(
             text: text, sources: sources, imagePages: imagePages, wholeDocument: whole,
-            totalPages: pages.count, summary: summary)
+            totalPages: pages.count, summary: summary + assignmentSummary)
+    }
+
+    private struct AssignmentContext {
+        var text: String
+        var sources: [StudySource] = []
+        var documentIDs = Set<UUID>()
+        var readableFiles = 0
+        var unavailableFiles = 0
+    }
+
+    private static func assignmentContext(
+        _ assignment: CanvasMaterialReference, course: StudyCourse, store: StudyLibraryStore,
+        currentDocumentID: UUID?, keywords: Set<String>, notices: [String: String]
+    ) -> AssignmentContext {
+        let linkedIDs = assignment.assignment?.linkedFileIDs ?? []
+        let keys = Set([assignment.id] + linkedIDs.map { "files:\($0)" })
+        let documents = course.documents.filter { keys.contains($0.sourceKey ?? "") }
+        var result = AssignmentContext(text: "\nAssignment: \(assignment.title)\n")
+        result.documentIDs = Set(documents.map(\.id))
+        var manifest: [String] = []
+        var readable: [(StudyDocument, StudyDocumentIndex)] = []
+        var manifestIDs = Array(linkedIDs.prefix(50))
+        if let currentKey = documents.first(where: { $0.id == currentDocumentID })?.sourceKey,
+            let currentID = linkedIDs.first(where: { "files:\($0)" == currentKey }), !manifestIDs.contains(currentID)
+        {
+            manifestIDs.append(currentID)
+        }
+        for id in manifestIDs {
+            let key = "files:\(id)"
+            let reference = course.materials.first { $0.id == key }
+            let name = reference?.fileName ?? reference?.title ?? "Canvas file \(id)"
+            let label = TextInputPolicy.bounded(name, maximumUTF16Units: 180)
+            if let saved = documents.first(where: { $0.sourceKey == key }),
+                FileManager.default.fileExists(atPath: store.file(for: saved).path),
+                let index = try? store.index(for: saved), saved.unreadablePages < saved.pageCount,
+                index.pages.contains(where: { !$0.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty })
+            {
+                result.readableFiles += 1
+                if saved.id == currentDocumentID {
+                    manifest.append("- \(label): current reading; content appears in the document section above.")
+                } else {
+                    let savedStatus =
+                        notices[key].map {
+                            "saved copy; latest preparation failed (\(TextInputPolicy.bounded($0, maximumUTF16Units: 150)))"
+                        } ?? "indexed"
+                    manifest.append(
+                        "- \(label): \(savedStatus); available text follows below within the assignment budget.")
+                    readable.append((saved, index))
+                }
+            } else {
+                result.unavailableFiles += 1
+                let reason =
+                    notices[key] ?? reference?.unavailableReason
+                    ?? (documents.contains(where: { $0.sourceKey == key })
+                        ? "saved but no readable text was extracted" : "not downloaded")
+                manifest.append(
+                    "- \(label): \(TextInputPolicy.bounded(reason, maximumUTF16Units: 300)). Contents are unavailable in this request."
+                )
+            }
+        }
+        if linkedIDs.count > manifestIDs.count {
+            let omitted = linkedIDs.count - manifestIDs.count
+            result.unavailableFiles += omitted
+            manifest.append(
+                "- \(omitted) additional linked files exceed the 50-file automatic context limit. Their contents are not included."
+            )
+        }
+        if linkedIDs.isEmpty {
+            manifest.append(
+                assignment.assignment?.linkedFileIDs == nil
+                    ? "Linked-file metadata is not available. Do not assume this assignment has no included files."
+                    : "No files are linked in the saved assignment instructions.")
+        }
+        result.text +=
+            "Included-file manifest:\n"
+            + TextInputPolicy.bounded(manifest.joined(separator: "\n"), maximumUTF16Units: 8_000) + "\n"
+        var remaining = max(0, assignmentBudget - result.text.utf16.count)
+
+        func append(_ document: StudyDocument, index: StudyDocumentIndex, allowance: Int, instructions: Bool = false) {
+            var used = 0
+            var included = 0
+            let ranked = index.pages.sorted {
+                let lhs = terms($0.text).intersection(keywords).count
+                let rhs = terms($1.text).intersection(keywords).count
+                return lhs == rhs ? $0.number < $1.number : lhs > rhs
+            }
+            for page in ranked {
+                let heading =
+                    "\n--- \(instructions ? "Assignment instructions" : "Assignment file"): \(document.title), page \(page.number) ---\n"
+                let available = min(allowance - used, remaining) - heading.utf16.count
+                guard available > 0 else { break }
+                let piece = TextInputPolicy.bounded(page.text, maximumUTF16Units: available)
+                result.text += heading + piece + "\n"
+                let cost = heading.utf16.count + piece.utf16.count + 1
+                used += cost
+                remaining -= cost
+                result.sources.append(StudySource(documentID: document.id, title: document.title, page: page.number))
+                included += 1
+                if piece != page.text {
+                    result.text += "[This page is shortened; the remaining text is not visible.]\n"
+                    remaining -= 64
+                    break
+                }
+            }
+            if included < index.pages.count {
+                result.text +=
+                    "[\(document.title): \(included) of \(index.pages.count) pages included; omitted pages are not visible.]\n"
+                remaining -= document.title.utf16.count + 110
+            }
+        }
+
+        if let instructions = documents.first(where: { $0.sourceKey == assignment.id }),
+            instructions.id != currentDocumentID,
+            let index = try? store.index(for: instructions)
+        {
+            append(instructions, index: index, allowance: min(8_000, remaining), instructions: true)
+        } else if !documents.contains(where: { $0.sourceKey == assignment.id && $0.id == currentDocumentID }) {
+            result.text += "Assignment instructions are not saved; their contents are unavailable.\n"
+            remaining -= 80
+        }
+        for (position, entry) in readable.enumerated() {
+            // Give every file a share even for generic questions with no matching keywords.
+            append(entry.0, index: entry.1, allowance: max(0, remaining / (readable.count - position)))
+        }
+        result.text = TextInputPolicy.bounded(result.text, maximumUTF16Units: assignmentBudget)
+        return result
     }
 
     static func requestMessages(
