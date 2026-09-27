@@ -9,3 +9,9 @@ scripts/.opencode-env
 .swiftpm/
 apps/macos/.build/
 apps/macos/.swiftpm/
+
+# Private hosted service storage
+.data/
+.env
+.env.*
+!.env.example

@@ -19,4 +19,18 @@ jobs:
           cache: npm
       - run: npm ci
       - run: npm run check
+      - run: npm run build:web
       - run: npm run package:chrome
+
+  hosted-container:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: docker build --tag scholia:test .
+      - name: Check independent hosted service
+        run: |
+          docker run --detach --name scholia-test -p 127.0.0.1:3000:3000 --env SCHOLIA_ORIGIN=http://127.0.0.1:3000 scholia:test
+          curl --fail --retry 10 --retry-connrefused --retry-delay 1 http://127.0.0.1:3000/healthz
+      - name: Show service output
+        if: always()
+        run: docker logs scholia-test || true
