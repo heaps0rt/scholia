@@ -1,6 +1,15 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { packPageContext, packParentContext, packSiteContext } from '../packages/core/src/context.js';
+import {
+  COMPACT_PACKED_CONTEXT_CHARS,
+  packPageContext,
+  packParentContext,
+  packSiteContext
+} from '../packages/core/src/context.js';
+
+test('compact automatic context uses the fast prompt budget', () => {
+  assert.equal(COMPACT_PACKED_CONTEXT_CHARS, 6_000);
+});
 
 test('page context stays complete when small and becomes a relevant bounded pack when large', () => {
   assert.equal(packPageContext('A complete short page.'), 'A complete short page.');

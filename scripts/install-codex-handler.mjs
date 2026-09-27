@@ -10,7 +10,7 @@ runMacUrlHandlerInstaller({
   displayName: 'Scholia Codex Bridge',
   appName: 'Scholia Codex Bridge.app',
   bundleId: 'app.scholia.codexbridge',
-  scheme: 'codexbridge',
+  scheme: 'scholia-codex',
   defaultPort: 8789,
   binary: 'codex',
   launcher: join(scripts, 'start-codex-bridge.command'),

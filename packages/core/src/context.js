@@ -1,4 +1,5 @@
 export const MAX_PACKED_CONTEXT_CHARS = 24_000;
+export const COMPACT_PACKED_CONTEXT_CHARS = 6_000;
 export const MAX_PARENT_CONTEXT_CHARS = 12_000;
 
 const TARGET_CHUNK_CHARS = 1_500;
@@ -215,17 +216,24 @@ export function packPageContext(pageText, {
     used += cost;
   };
 
-  if (anchor >= 0) {
-    for (const offset of [0, -1, 1, -2, 2]) add(anchor + offset);
-  }
-  add(0);
-  add(chunks.length - 1);
-
   const relevant = scores
     .map((score, index) => ({ index, score }))
     .filter(({ score }) => score > 0)
     .sort((left, right) => right.score - left.score || left.index - right.index);
+
+  // Keep the selected passage, but reserve room for sections that answer the
+  // current question before filling in the wider selection neighborhood.
+  add(anchor);
+  for (const { index } of relevant.slice(0, 4)) add(index);
+  if (anchor >= 0) {
+    for (const offset of [-1, 1]) add(anchor + offset);
+  }
+  add(0);
+  add(chunks.length - 1);
   for (const { index } of relevant) add(index);
+  if (anchor >= 0) {
+    for (const offset of [-2, 2]) add(anchor + offset);
+  }
   for (const index of evenlySpacedIndices(chunks.length, Math.min(16, chunks.length))) add(index);
 
   if (!selected.size) {

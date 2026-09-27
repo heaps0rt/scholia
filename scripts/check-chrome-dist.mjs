@@ -9,31 +9,63 @@ const manifest = JSON.parse(await readFile(join(dist, 'manifest.json'), 'utf8'))
 
 if (manifest.manifest_version !== 3) throw new Error('Chrome build is not Manifest V3.');
 if (!isChromeExtensionVersion(manifest.version)) throw new Error('Chrome build has an invalid extension version.');
+if (!manifest.content_security_policy?.extension_pages?.includes("'wasm-unsafe-eval'")) {
+  throw new Error('Chrome extension pages must allow the bundled PDF.js WebAssembly image decoders.');
+}
+if (!manifest.action?.default_popup) throw new Error('Chrome build does not declare the compact toolbar popup.');
+if (manifest.action.default_popup === manifest.side_panel?.default_path) {
+  throw new Error('The toolbar popup and side panel must remain separate surfaces.');
+}
+if (manifest.mime_types_handler) {
+  throw new Error('Do not register native MIME handlers: affected browsers crash when opening a PDF.');
+}
+for (const command of ['capture-region', 'quick-chat']) {
+  if (!manifest.commands?.[command]) throw new Error(`Chrome build is missing the ${command} command.`);
+}
+const selectionScript = manifest.content_scripts?.find((entry) => entry.js?.includes('content.js'));
+if (!selectionScript?.all_frames
+    || !selectionScript.match_about_blank
+    || !selectionScript.match_origin_as_fallback) {
+  throw new Error('Selection tools must run in embedded document frames, including Canvas PDF previews.');
+}
 
 const required = [
   manifest.background?.service_worker,
   manifest.options_page,
+  manifest.action?.default_popup,
   manifest.side_panel?.default_path,
   ...manifest.content_scripts.flatMap((entry) => entry.js || []),
   ...Object.values(manifest.icons || {}),
-  'options.js', 'options.css', 'panel.js', 'panel.css', 'pdf-viewer.html', 'pdf-viewer.js', 'pdf-viewer.css',
+  'options.js', 'options.css', 'panel.js', 'panel.css', 'file-attachments.css',
+  'chat.html', 'chat.css', 'chat-bootstrap.js',
+  'popup.js', 'popup.css', 'pdf-viewer.html', 'pdf-viewer.js', 'pdf-viewer.css',
   'vendor/katex/katex.min.css', 'vendor/katex/LICENSE',
-  'vendor/pdfjs/pdf.min.mjs', 'vendor/pdfjs/pdf.worker.min.mjs', 'vendor/pdfjs/LICENSE'
+  'vendor/licenses/markdown-it.txt', 'vendor/licenses/highlight.js.txt',
+  'vendor/pdfjs/pdf.min.mjs', 'vendor/pdfjs/pdf.worker.min.mjs',
+  'vendor/pdfjs/images/annotation-note.svg', 'vendor/pdfjs/LICENSE'
 ].filter(Boolean);
 
 for (const relative of required) await access(join(dist, relative));
 
-for (const htmlFile of [manifest.options_page, manifest.side_panel.default_path, 'pdf-viewer.html']) {
+for (const htmlFile of [manifest.options_page, manifest.action.default_popup, manifest.side_panel.default_path, 'chat.html', 'pdf-viewer.html']) {
   const html = await readFile(join(dist, htmlFile), 'utf8');
   const remoteScript = /<script[^>]+src=["']https?:\/\//i.exec(html);
   if (remoteScript) throw new Error(`${htmlFile} loads remotely hosted code.`);
   if (/\son\w+\s*=/.test(html)) throw new Error(`${htmlFile} contains an inline event handler.`);
 }
 
-for (const jsFile of ['content.js', 'service-worker.js', 'options.js', 'panel.js', 'pdf-viewer.js']) {
+for (const jsFile of ['content.js', 'chatgpt-probe.js', 'service-worker.js', 'options.js', 'panel.js', 'chat-bootstrap.js', 'popup.js', 'pdf-viewer.js']) {
   const source = await readFile(join(dist, jsFile), 'utf8');
   if (/\b(?:eval|Function)\s*\(/.test(source)) throw new Error(`${jsFile} contains dynamic code execution.`);
   if (/\bimport\s*\(\s*["']https?:\/\//.test(source)) throw new Error(`${jsFile} imports remote code.`);
+}
+
+for (const jsFile of ['content.js', 'service-worker.js', 'options.js', 'panel.js', 'popup.js']) {
+  const source = await readFile(join(dist, jsFile), 'utf8');
+  if (!source.includes('GPT NTNU')
+      || !source.includes('https://llm.hpc.ntnu.no/v1/chat/completions')) {
+    throw new Error(`${jsFile} is missing the GPT NTNU provider.`);
+  }
 }
 
 const fonts = await readdir(join(dist, 'vendor', 'katex', 'fonts'));

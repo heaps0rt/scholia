@@ -51,6 +51,13 @@ await build({
 
 await build({
   ...shared,
+  entryPoints: [join(sourceRoot, 'chatgpt-probe.js')],
+  outfile: join(outputRoot, 'chatgpt-probe.js'),
+  format: 'iife'
+});
+
+await build({
+  ...shared,
   entryPoints: [join(sourceRoot, 'service-worker.js')],
   outfile: join(outputRoot, 'service-worker.js'),
   format: 'esm'
@@ -71,13 +78,26 @@ await Promise.all([
   }),
   build({
     ...shared,
+    entryPoints: [join(sourceRoot, 'popup.js')],
+    outfile: join(outputRoot, 'popup.js'),
+    format: 'esm'
+  }),
+  build({
+    ...shared,
     entryPoints: [join(sourceRoot, 'pdf-viewer.js')],
     outfile: join(outputRoot, 'pdf-viewer.js'),
     format: 'esm'
   })
 ]);
 
-for (const file of ['manifest.json', 'options.html', 'options.css', 'panel.html', 'panel.css', 'pdf-viewer.html', 'pdf-viewer.css']) {
+for (const file of [
+  'manifest.json',
+  'options.html', 'options.css',
+  'panel.html', 'panel.css', 'file-attachments.css',
+  'chat.html', 'chat.css', 'chat-bootstrap.js',
+  'popup.html', 'popup.css',
+  'pdf-viewer.html', 'pdf-viewer.css'
+]) {
   await cp(join(chromeRoot, file), join(outputRoot, file));
 }
 await cp(join(chromeRoot, 'assets'), join(outputRoot, 'assets'), { recursive: true });
@@ -90,6 +110,11 @@ await cp(join(katexRoot, 'katex.min.css'), join(katexOutput, 'katex.min.css'));
 await cp(join(katexRoot, 'fonts'), join(katexOutput, 'fonts'), { recursive: true });
 await cp(join(projectRoot, 'node_modules', 'katex', 'LICENSE'), join(katexOutput, 'LICENSE'));
 
+const licenseOutput = join(outputRoot, 'vendor', 'licenses');
+await mkdir(licenseOutput, { recursive: true });
+await cp(join(projectRoot, 'node_modules', 'markdown-it', 'LICENSE'), join(licenseOutput, 'markdown-it.txt'));
+await cp(join(projectRoot, 'node_modules', 'highlight.js', 'LICENSE'), join(licenseOutput, 'highlight.js.txt'));
+
 const pdfjsRoot = join(projectRoot, 'node_modules', 'pdfjs-dist');
 const pdfjsOutput = join(outputRoot, 'vendor', 'pdfjs');
 await mkdir(pdfjsOutput, { recursive: true });
@@ -97,6 +122,7 @@ await cp(join(pdfjsRoot, 'legacy', 'build', 'pdf.min.mjs'), join(pdfjsOutput, 'p
 await cp(join(pdfjsRoot, 'legacy', 'build', 'pdf.worker.min.mjs'), join(pdfjsOutput, 'pdf.worker.min.mjs'));
 await cp(join(pdfjsRoot, 'cmaps'), join(pdfjsOutput, 'cmaps'), { recursive: true });
 await cp(join(pdfjsRoot, 'standard_fonts'), join(pdfjsOutput, 'standard_fonts'), { recursive: true });
+await cp(join(pdfjsRoot, 'web', 'images'), join(pdfjsOutput, 'images'), { recursive: true });
 await cp(join(pdfjsRoot, 'LICENSE'), join(pdfjsOutput, 'LICENSE'));
 
 const manifest = JSON.parse(await readFile(outputManifestPath, 'utf8'));

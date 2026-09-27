@@ -1,161 +1,170 @@
 # Architecture
 
-Scholia separates capture, reasoning, and presentation so native integrations
-can feel native without drifting semantically.
+Scholia has three independent runtimes: a native macOS app, a Chrome extension,
+and an optional hosted web service. `apps/web` supplies the browser workspace
+for either the native app's loopback API or the hosted service. Opening the
+native workspace does not start a web server.
 
-```text
-platform capture adapter
-  ├─ selected text + adaptive page-wide context
-  ├─ precise rendered-math selection + source notation
-  ├─ explicit screen-region image
-  └─ explicitly chosen or clipboard-pasted image
-                │
-                ▼
-       normalized explain request
-                │
-                ▼
-     platform-owned provider runtime
-       (credentials never cross into page content)
-                │
-                ▼
-        streaming explanation UI
-```
+## Repository map
 
-The normalized shape is documented in
-`packages/core/schemas/explain-request.schema.json`. JavaScript prompt and
-provider contracts live in `packages/core/src`; other platforms implement the
-same concepts in their native language.
+| Path            | Responsibility                                                                        |
+| --------------- | ------------------------------------------------------------------------------------- |
+| `apps/macos`    | SwiftUI/AppKit application, native document readers, local library, Canvas, providers |
+| `apps/web`      | Browser workspace, PDF.js reader, tutor UI, local and hosted API client               |
+| `apps/server`   | Hosted accounts, private storage, Canvas access, document indexing, provider requests |
+| `apps/chrome`   | Extension capture, PDF reader, side panel, settings, service worker                   |
+| `packages/core` | Shared JavaScript prompts, provider contracts, context ranking, tutoring rules        |
+| `scripts`       | Build, packaging, local bridges, account administration, integration checks           |
+| `tests`         | JavaScript unit and service integration tests                                         |
 
-## Chrome boundaries
+The normalized explanation request is defined in
+`packages/core/schemas/explain-request.schema.json`. Swift implements the same
+prompt and provider concepts with native types. Captured sources are delimited
+as reference material, separately from user instructions and credentials.
 
-### Content script
+## Native macOS
 
-`apps/chrome/src/content.js` runs in Chrome's isolated content-script world and
-owns the in-page UI. Capture and math extraction live in `page-capture.js`.
-Neither module receives API keys.
+SwiftUI supplies navigation and controls. AppKit owns window behavior,
+resizable reader/tutor panes, text rendering, and platform integration. PDFKit
+reads PDFs, Vision performs local OCR, and Quick Look presents original layouts
+when a semantic reader cannot preserve them. WebKit is used for Canvas sign-in,
+not as the application's UI runtime.
 
-The content script supports three capture adapters:
+`StudyWorkspaceModel` owns courses, documents, navigation, threads, and drafts.
+`StudyDocumentImporter` copies originals into the library and builds bounded indexes.
+PDF text and OCR, Office extraction, notebook parsing, and image processing use
+local frameworks and background work. Notebook cells, macros, and formulas are
+never executed. Native semantic search uses the bundled JavaScript ranker in
+JavaScriptCore; it requires no model request.
 
-- Text selection clones the selected DOM fragment and replaces accessible
-  MathJax/KaTeX/MathML nodes with source-like `$...$` notation.
-- Page context starts with the complete rendered body text. Pages that fit the
-  context budget are retained verbatim. Longer pages are segmented and ranked
-  locally against the selection and initial question; the provider receives a
-  bounded pack containing a whole-page heading map, the selection neighborhood,
-  and the strongest excerpts from across the document.
-- Option/Alt-click on MathJax walks `data-mml-node` ancestors. The user can move
-  narrower or wider through a symbol/sub-expression before submitting it;
-  plain click selects the whole formula and multi-select can combine symbols.
-- Region capture first records coordinates, removes Scholia's overlay, then
-  asks the service worker for `tabs.captureVisibleTab()`. Cropping and
-  down-sampling happen locally in the content script.
+Library snapshots are written through a serial utility queue that coalesces
+pending saves; lifecycle boundaries flush the latest state. Back/Forward records
+reading destinations and saves drafts before navigation. An AppKit split view
+lets the tutor occupy almost the full document window without replacing the
+reader or reloading the PDF.
 
-The response popup lives in a closed Shadow DOM root so host-page CSS and most
-page scripts cannot alter it accidentally. Markdown is escaped before limited
-formatting is applied, and KaTeX runs with `trust: false`.
+Canvas catalogs metadata before downloading content. Materials have stable
+source identities, optional module positions, remote versions, and saved
+references. Refresh reconciles additions, changes, and removals while preserving
+conversations, local edits, and incomplete collections. Downloads stream in
+bounded chunks with cancellation. API requests refuse redirects; file requests
+can follow signed HTTPS storage links after removing Canvas credentials.
 
-Assistant answers remain selectable. A selection inside an answer opens a new
-layer over the current explanation. Every parent remains fully rendered as an
-inert panel behind the active window and is restored by Back. The child request
-receives a bounded parent-context pack with the complete relevant answer region,
-recent parent turns, and a compact trace of earlier layers.
+Frequently visited courses can preload a small number of files while idle. The
+policy waits until three visits and three seconds of idle time, selects at most
+three files, limits each to 10 MB and the batch to 20 MB, and yields to active
+work, Low Power Mode, and thermal pressure. Users can disable it. This does not
+start a bulk course download.
 
-### Side panel and PDF adapter
+Provider secrets use Keychain; preferences use `UserDefaults`. Library files,
+indexes, reading history, edit revisions, and conversations live under
+`~/Library/Application Support/Scholia/Study`. Structured practice uses a
+separate SQLite event store with stable event IDs, version checks, source
+snapshots, and transactional review scheduling. See [Practice](PRACTICE.md).
 
-The extension-owned side panel can begin a conversation without a text
-selection. For ordinary web pages it requests a context pack from the content
-script, using the same page-title, rendered-text, outline, and local ranking
-pipeline as an in-page explanation. The packed context is fixed for that chat,
-so switching tabs does not silently change the conversation's source.
+Desktop selection and region capture are separate from workspace reading:
+Accessibility reads bounded visible text on demand and rejects secure fields;
+region capture crops and resizes only an explicitly selected area. Quick Chat
+remains in memory until promoted to a saved conversation. Local CLI bridges are
+started only when needed and stopped only if Scholia owns their process.
 
-Explicit page selections are briefly mirrored through `chrome.storage.session`
-so an already-open side panel—and a panel opened just after selection—can show
-the excerpt in its source card and composer. In an existing conversation the
-excerpt is scoped only to the next turn, preserving the original context pack.
-Selecting assistant text in the panel creates the same kind of bounded,
-delimited context inside a separate explanation window. That child window has
-its own transcript and follow-up composer, leaving the original sidebar chat
-unchanged behind it. Editing a main-chat user turn truncates the later
-transcript and resubmits from that point.
+## Local browser workspace
 
-When the user explicitly enables **Entire site**, the active content script
-performs a bounded breadth-first crawl of same-origin HTML links. It strips
-scripts, navigation, forms, and hidden content from fetched documents, reads at
-most 48 pages / 1.2 million text characters over three link levels, and caches
-the corpus locally for ten minutes. A site map plus question-ranked excerpts is
-packed into the ordinary 24,000-character model context budget. Cross-origin,
-download, sign-out, deletion, and unsubscribe links are never followed.
+**Open in Browser** starts `StudyWebServer` on `127.0.0.1:8792`. Its bundled
+frontend shares the native model, files, provider settings, Canvas connection,
+reading position, and learning store. The Mac must remain running. Native and
+local-browser navigation refer to the same active workspace.
 
-Chrome's built-in PDF viewer does not accept Scholia's content script. The
-service worker therefore routes detected PDFs to an extension-owned PDF.js
-viewer with a canvas and selectable text layer. The standard content UI runs on
-that text layer, so pointer selection opens the same Explain pill as an ordinary
-page. A one-click **Chrome view** action bypasses routing when the native viewer
-is preferred. Existing built-in-viewer context-menu events still fall back to
-the side panel.
+The server validates Host and Origin, rejects cross-site requests, and requires
+a per-launch token for API and document access. It sends no raw Keychain
+credentials to the browser. Responses disable caching and set a restrictive
+Content Security Policy. The browser renders PDFs with PDF.js; provider calls,
+OCR, and library mutations remain native operations.
 
-The viewer and panel fetch the PDF under the extension's existing host
-permission and extract text locally. Each page receives an explicit marker, and
-a page map plus the selected passage and question are passed to the shared
-context packer. The original address is held behind an opaque session token;
-signed URL query data is kept for the local fetch but removed from both the
-viewer address and the URL sent to a provider.
+Draft and page mutations carry an originating destination and revision. Stale
+writes cannot silently overwrite another window's work. Browser edit drafts and
+practice outbox entries remain available for recovery after a conflict.
 
-Local, authenticated, generated, password-protected, or scanned PDFs may not
-yield downloadable text. The panel offers an explicit file chooser and a
-visible-page image fallback. Region cropping and 1800-pixel down-sampling occur
-inside the panel before provider submission.
+## Hosted web service
 
-Both the side-panel and in-page composers accept an explicitly selected local
-image or an image pasted from the clipboard. The browser decodes it, flattens
-transparency, and limits its longest edge to 1800 pixels before it becomes the
-source for a new conversation. The Codex loopback bridge materializes the
-base64 request block in a private temporary directory, passes the path to
-`codex exec --image`, and removes it when that process exits.
+`apps/server/server.js` runs independently of macOS on Node.js 24 or newer.
+It serves the same frontend with capability flags for hosted features. No
+native process, desktop permission, or loopback bridge is required.
 
-### Service worker
+- `store.js` owns the SQLite account database, password hashes, sessions, and
+  credential encryption. Passwords use salted scrypt; sessions store hashed
+  random tokens and expire after seven days. Credentials use AES-256-GCM with
+  account-specific authenticated data and a server-held key.
+- `workspaces.js` scopes every operation to the authenticated account and
+  serializes that account's mutations. Workspaces and conversations are private;
+  each session has independent reading navigation. Document edits validate the
+  source revision before replacing the active file reference.
+- `documents.js` stores originals and indexes beneath account-specific
+  directories. Extraction runs in bounded worker threads. PDFs use PDF.js;
+  Office and notebook readers extract data without executing document content.
+  Hosted extraction does not perform the native app's Vision OCR.
+- `canvas.js` uses each account's own Canvas token and an operator-controlled
+  host allowlist. `network.js` rejects private/reserved network destinations,
+  pins validated DNS results for requests, bounds downloads, and strips
+  credentials when following file redirects.
 
-`apps/chrome/src/service-worker.js` owns:
+API and file routes authenticate the session and check ownership before reading
+data. Mutations require the session's CSRF token. Host/Origin checks, strict
+HttpOnly cookies, login throttling, upload limits, CSP, and worker limits provide
+additional boundaries. HTTPS is required for non-loopback public origins.
+The server operator can read stored files and decrypt credentials; this is not
+end-to-end encryption.
 
-- `chrome.storage.local` settings and credentials;
-- provider requests and streaming parsers;
-- tab capture;
-- commands, context menus, and side-panel coordination.
+The first hosted deployment uses one service process with persistent SQLite and
+file storage. It supports separate accounts, conversational tutoring, Canvas,
+imports, and editable text/notebooks. Native spaced practice and its review
+queue are not exposed in hosted web. Hosted, native, and extension libraries do
+not synchronize. See [Hosting](HOSTING.md) before deployment.
 
-Only public settings—provider/model names and UI preferences—are returned to a
-content script. Full settings can be requested only when the message sender is
-an extension-owned URL.
+## Chrome extension
 
-The long-lived chat port keeps a Manifest V3 service worker alive while an
-answer streams and gives the popup an explicit cancellation path. A heartbeat
-keeps slow local/free models alive before their first streamed token.
+The content script runs in an isolated world and never receives provider keys.
+It captures text, accessible mathematics, sanitized page structure, or an
+explicitly chosen image. Its page serializer omits executable content, event
+handlers, live form values, and Scholia's controls. Longer sources are ranked
+locally into bounded context. **Complete page** and **Entire site** are explicit
+options, with bounded traversal and capture.
 
-The packed page context is fixed for the life of an explanation conversation,
-placed before the selected excerpt and question, and reused on follow-ups. This
-keeps the model's grounding stable and gives prefix-caching providers a stable
-request prefix while recent conversation turns remain bounded.
+The service worker owns settings, credentials, provider transport, tab capture,
+commands, and messaging. Only extension-owned pages can request secret settings.
+Provider requests stream through a long-lived port with cancellation and
+protocol-specific parsing. Hosted endpoint traffic requires HTTPS; HTTP is
+accepted only for local loopback providers.
 
-Codex CLI and Claude Code use the loopback OpenAI-compatible bridges in
-`scripts/`; opencode uses its native create-session/send-message API. Health
-checks and start commands are brokered by the worker, while launching a custom
-URL scheme always requires an explicit click and the operating system's normal
-external-app confirmation.
+The toolbar popup, side panel, full-tab chat, PDF reader, and explanation layers
+reuse the same rendering and provider contracts. A saved chat retains its fixed
+source context; switching tabs does not replace it. Selected passages are scoped
+to their originating tab. Recursive explanations retain bounded parent context,
+and Back returns to the unchanged parent conversation. Editing a user message
+replaces the later conversation branch.
 
-### Packaged code
+PDF.js, workers, decoders, fonts, and character maps are bundled. Visible pages
+are rendered before background indexing; rendering and semantic indexes are
+bounded and yield to interaction. Persisted PDF indexes use a document
+fingerprint. Local file handles remain revocable, and provider context strips
+private URL query data. Canvas indexes are scoped by host, account, and course.
 
-Manifest V3 does not permit remotely hosted executable code. The build bundles
-all JavaScript and packages KaTeX CSS/fonts under `vendor/katex` and PDF.js,
-its worker, character maps, and standard fonts under `vendor/pdfjs`. Network
-URLs inside the worker are data endpoints, not imported scripts.
+Browser answers use bundled Markdown, syntax highlighting, and KaTeX with raw
+HTML disabled, unsafe link schemes rejected, and remote answer images blocked.
+Native answers use cmark-gfm and a single selectable AppKit text view with local
+math rendering. Returned provider reasoning, when available, stays in a
+separate collapsed disclosure. Neither runtime loads remote executable code.
 
-## macOS boundaries
+## Verification
 
-The native prototype uses:
+`npm run check` runs JavaScript tests, source validation, and Swift syntax checks.
+Hosted tests exercise two-account ownership, credentials, CSRF, independent
+navigation, and revision conflicts. `scripts/smoke-hosted-web.mjs` exercises the
+real service in Chromium.
 
-- Accessibility APIs for selected text;
-- SwiftUI for the menu-bar surface and explanation window;
-- the same normalized capture kinds and prompt rules as the browser app.
-
-It is deliberately not a web wrapper. Provider requests, credentials, and
-screen-region capture will be added only with complete native permission and
-security boundaries.
+Native smoke runners link application code against isolated temporary libraries
+and deterministic provider/Canvas fixtures. Data checks cover importing,
+reconciliation, search, edits, persistence, and image coordinates. UI checks
+cover native windows and the browser workspace. Browser automation in this
+repository uses Chromium. Build output and smoke screenshots are ignored; old
+one-off measurements are not maintained as product specifications.

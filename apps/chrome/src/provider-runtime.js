@@ -1,7 +1,27 @@
-import { modelReasoning, providerById, mergeSettings } from '../../../packages/core/src/providers.js';
+import {
+  mergeSettings,
+  modelSupportsImages,
+  modelReasoning,
+  providerById,
+  providerSupportsFastMode,
+  providerSupportsWebSearch
+} from '../../../packages/core/src/providers.js';
+import { fetchOpencodeModels } from './opencode-models.js';
 import { initialUserPrompt, normalizeLanguage, sanitizeConversation, systemPrompt } from '../../../packages/core/src/prompt.js';
+import { packPageContext } from '../../../packages/core/src/context.js';
+import {
+  formatChatGptWebContext,
+  formatChatGptWebContextForPage,
+  isChatGptWebUrl
+} from '../../../packages/core/src/chatgpt-context.js';
+import {
+  boundedProviderReasoning,
+  reasoningDeltaFromProviderEvent,
+  reasoningFromOpencodeResponse,
+  reasoningFromProviderResponse
+} from './provider-reasoning.js';
 
-const opencodeSessions = new Map();
+const COMPACT_ACCOUNT_CONTEXT_CHARS = 4_000;
 
 function assertSecureEndpoint(endpoint, providerName) {
   let url;
@@ -56,6 +76,31 @@ function bridgeInstructions(provider, endpoint) {
   const command = `${bridge.command} --port ${port}`;
   const installCommand = bridge.installCommand ? `${bridge.installCommand} --port ${port}` : '';
   return { startUrl, command, installCommand, port };
+}
+
+export async function discoverOpencodeModels(rawSettings, options = {}) {
+  const settings = mergeSettings(rawSettings);
+  const provider = providerById('opencode');
+  const endpoint = String(settings.endpoints[provider.id] || provider.endpoint).trim();
+  assertSecureEndpoint(endpoint, provider.name);
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), options.timeoutMs || 2_500);
+  const abortFromParent = () => controller.abort();
+  if (options.signal) {
+    if (options.signal.aborted) controller.abort();
+    else options.signal.addEventListener('abort', abortFromParent, { once: true });
+  }
+  try {
+    const result = await fetchOpencodeModels({
+      baseUrl: endpointBase(endpoint),
+      headers: bridgeHeaders(provider, settings),
+      signal: controller.signal
+    });
+    return { ...result, fetchedAt: Date.now() };
+  } finally {
+    clearTimeout(timeout);
+    options.signal?.removeEventListener('abort', abortFromParent);
+  }
 }
 
 export async function checkBridgeStatus(providerId, rawSettings, options = {}) {
@@ -123,55 +168,142 @@ function imageParts(dataUrl) {
 
 function preparedConversation(payload, settings) {
   const language = normalizeLanguage(settings.language, payload.pageLanguage);
-  const conversation = sanitizeConversation(payload.messages);
+  const legacyImage = imageParts(payload.imageDataUrl);
+  const conversation = sanitizeConversation(payload.messages).map((message, index) => {
+    const { imageDataUrl, ...textMessage } = message;
+    const image = imageParts(imageDataUrl) || (index === 0 ? legacyImage : null);
+    return image ? { ...textMessage, image } : textMessage;
+  });
   if (!conversation.length || conversation[0].role !== 'user') {
     throw new Error('Nothing was provided to explain.');
   }
 
   const first = conversation[0];
+  const contextEnabled = payload.includeContext !== false;
+  const compactContext = typeof payload.compactContext === 'boolean'
+    ? payload.compactContext
+    : settings.includePageContext !== false;
+  const activeUserIndex = conversation.findLastIndex((message) => message.role === 'user');
+  const activeQuestion = conversation[activeUserIndex]?.content || first.content;
+  const quickChatAccountContextEnabled = settings.chatgptWebContext.quickChatRefreshInterval !== 'off';
+  const manualAccountContext = contextEnabled && payload.useChatGptWebContext
+    && (String(payload.parentContext || '').trim() || quickChatAccountContextEnabled)
+    ? formatChatGptWebContext(settings.chatgptWebContext)
+    : '';
+  const automaticAccountContext = contextEnabled && isChatGptWebUrl(payload.url)
+    ? formatChatGptWebContextForPage(settings.chatgptWebContext, payload.url)
+    : '';
+  const rawAccountContext = automaticAccountContext || manualAccountContext;
+  const accountContext = rawAccountContext
+    ? compactContext ? packPageContext(rawAccountContext, {
+      question: activeQuestion,
+      maxChars: COMPACT_ACCOUNT_CONTEXT_CHARS,
+      scopeDescription: 'the locally saved ChatGPT memory and matching project snapshot',
+      mapLabel: 'Saved context map'
+    }) : rawAccountContext
+    : '';
+  const followUp = activeUserIndex > 0 && !conversation[activeUserIndex]?.image;
   conversation[0] = {
+    ...first,
     role: 'user',
     content: initialUserPrompt({
       question: first.content,
       selection: payload.selection,
-      context: settings.includePageContext ? payload.context : '',
-      parentContext: payload.parentContext,
-      pageTitle: payload.pageTitle,
-      url: payload.url,
+      context: followUp ? '' : contextEnabled ? payload.context : '',
+      parentContext: followUp ? '' : payload.parentContext,
+      accountContext: followUp ? '' : accountContext,
+      pageTitle: followUp || !contextEnabled ? '' : payload.pageTitle,
+      url: followUp || !contextEnabled ? '' : payload.url,
       kind: payload.kind,
-      language
+      language,
+      documentLanguage: payload.pageLanguage
     })
   };
+  if (followUp) {
+    const active = conversation[activeUserIndex];
+    conversation[activeUserIndex] = {
+      ...active,
+      role: 'user',
+      content: initialUserPrompt({
+        question: active.content,
+        selection: payload.selection,
+        context: contextEnabled ? payload.context : '',
+        parentContext: payload.parentContext,
+        accountContext,
+        pageTitle: contextEnabled ? payload.pageTitle : '',
+        url: contextEnabled ? payload.url : '',
+        kind: payload.kind,
+        language,
+        documentLanguage: payload.pageLanguage
+      })
+    };
+  }
 
-  return { language, conversation, image: imageParts(payload.imageDataUrl) };
+  return {
+    language,
+    conversation,
+    hasImages: conversation.some((message) => Boolean(message.image)),
+    learningMode: payload.learningMode === true
+  };
 }
 
 function openAiMessages(prepared) {
   return [
-    { role: 'system', content: systemPrompt(prepared.language) },
-    ...prepared.conversation.map((message, index) => {
-      if (index !== 0 || !prepared.image) return message;
+    { role: 'system', content: systemPrompt(prepared.language, { learningMode: prepared.learningMode }) },
+    ...prepared.conversation.map((message) => {
+      const { image, ...textMessage } = message;
+      if (!image || message.role !== 'user') return textMessage;
       return {
         role: 'user',
         content: [
           { type: 'text', text: message.content },
-          { type: 'image_url', image_url: { url: `data:${prepared.image.mediaType};base64,${prepared.image.base64}` } }
+          { type: 'image_url', image_url: { url: `data:${image.mediaType};base64,${image.base64}` } }
         ]
       };
     })
   ];
 }
 
+function openAiResponsesInput(prepared) {
+  return prepared.conversation.map((message) => {
+    const { image, ...textMessage } = message;
+    if (!image || message.role !== 'user') return textMessage;
+    return {
+      role: 'user',
+      content: [
+        { type: 'input_text', text: message.content },
+        { type: 'input_image', image_url: `data:${image.mediaType};base64,${image.base64}` }
+      ]
+    };
+  });
+}
+
+function openAiResponsesEndpoint(endpoint) {
+  const url = new URL(endpoint);
+  const pathname = url.pathname.replace(/\/+$/, '');
+  if (/\/responses$/i.test(pathname)) return url.href;
+  if (/\/chat\/completions$/i.test(pathname)) {
+    url.pathname = pathname.replace(/\/chat\/completions$/i, '/responses');
+    return url.href;
+  }
+  if (/\/v1$/i.test(pathname)) {
+    url.pathname = `${pathname}/responses`;
+    return url.href;
+  }
+  throw new Error('Web search requires an OpenAI Responses API endpoint ending in /v1/responses.');
+}
+
 function anthropicMessages(prepared) {
-  return prepared.conversation.map((message, index) => {
-    if (index !== 0 || !prepared.image) return message;
+  return prepared.conversation.map((message) => {
+    const { image, ...textMessage } = message;
+    if (!image || message.role !== 'user') return textMessage;
     return {
       role: 'user',
       content: [
         { type: 'text', text: message.content },
         {
           type: 'image',
-          source: { type: 'base64', media_type: prepared.image.mediaType, data: prepared.image.base64 }
+          source: { type: 'base64', media_type: image.mediaType, data: image.base64 }
         }
       ]
     };
@@ -180,11 +312,11 @@ function anthropicMessages(prepared) {
 
 function ollamaMessages(prepared) {
   return [
-    { role: 'system', content: systemPrompt(prepared.language) },
-    ...prepared.conversation.map((message, index) => ({
-      ...message,
-      ...(index === 0 && prepared.image ? { images: [prepared.image.base64] } : {})
-    }))
+    { role: 'system', content: systemPrompt(prepared.language, { learningMode: prepared.learningMode }) },
+    ...prepared.conversation.map((message) => {
+      const { image, ...textMessage } = message;
+      return { ...textMessage, ...(image ? { images: [image.base64] } : {}) };
+    })
   ];
 }
 
@@ -196,16 +328,25 @@ export function buildProviderRequest(payload, rawSettings) {
   const endpoint = String(settings.endpoints[provider.id] || provider.endpoint).trim();
   const key = String(settings.apiKeys[provider.id] || '').trim();
   const prepared = preparedConversation(payload, settings);
+  const webSearch = payload.webSearch === true;
 
   if (!endpoint) throw new Error(`Set an endpoint for ${provider.name} in Scholia settings.`);
   assertSecureEndpoint(endpoint, provider.name);
   if (provider.keyRequired && !key) throw new Error(`Add your ${provider.name} API key in Scholia settings.`);
-  if (prepared.image && !provider.supportsImages && !payload.bridgeSupportsImages) {
+  if (webSearch && !providerSupportsWebSearch(provider)) {
+    throw new Error(`Web search is not available through ${provider.name}. Choose OpenAI, Anthropic, OpenRouter, or the local Codex bridge.`);
+  }
+  if (prepared.hasImages && !provider.supportsImages && !payload.bridgeSupportsImages) {
     throw new Error(`${provider.name} cannot receive images. Choose a vision-capable provider.`);
+  }
+  if (prepared.hasImages && !modelSupportsImages(provider, model, settings)) {
+    throw new Error(`${model} is text-only. Choose a vision-capable model or remove the image.`);
   }
 
   const headers = { 'content-type': 'application/json' };
   let body;
+  let requestUrl = endpoint;
+  let responseProtocol = provider.protocol;
 
   if (provider.protocol === 'anthropic') {
     headers['x-api-key'] = key;
@@ -215,37 +356,72 @@ export function buildProviderRequest(payload, rawSettings) {
       model,
       max_tokens: 1400,
       stream: true,
-      system: systemPrompt(prepared.language),
+      system: systemPrompt(prepared.language, { learningMode: prepared.learningMode }),
       messages: anthropicMessages(prepared)
     };
+    if (webSearch) {
+      body.tools = [{ type: 'web_search_20250305', name: 'web_search', max_uses: 5 }];
+    }
   } else if (provider.protocol === 'ollama') {
     if (key) headers.authorization = `Bearer ${key}`;
     body = { model, stream: true, messages: ollamaMessages(prepared), options: { temperature: 0.25 } };
   } else if (provider.protocol === 'opencode') {
-    return { provider, model, url: endpointBase(endpoint), prepared, key, fetchOptions: null };
+    const reasoning = modelReasoning(provider, model, settings);
+    const effort = String(payload.reasoningEffort || settings.reasoningEfforts[provider.id] || reasoning?.default || '');
+    const variant = reasoning?.efforts?.includes(effort) ? effort : '';
+    return { provider, model, variant, url: endpointBase(endpoint), prepared, key, fetchOptions: null };
   } else if (provider.protocol === 'cohere') {
     headers.authorization = `Bearer ${key}`;
     body = { model, stream: true, messages: openAiMessages(prepared), temperature: 0.25 };
   } else {
     if (key) headers.authorization = `Bearer ${key}`;
-    body = {
-      model,
-      stream: true,
-      messages: openAiMessages(prepared),
-      temperature: 0.25
-    };
+    if (webSearch && provider.id === 'openai') {
+      requestUrl = openAiResponsesEndpoint(endpoint);
+      responseProtocol = 'openai-responses';
+      body = {
+        model,
+        stream: true,
+        instructions: systemPrompt(prepared.language, { learningMode: prepared.learningMode }),
+        input: openAiResponsesInput(prepared),
+        tools: [{ type: 'web_search' }]
+      };
+      if (/^(?:gpt-[56](?:[.-]|$)|o\d(?:-|$))/i.test(model)) {
+        body.reasoning = { summary: 'auto' };
+      }
+    } else {
+      body = {
+        model,
+        stream: true,
+        messages: openAiMessages(prepared),
+        temperature: 0.25
+      };
+      if (webSearch && provider.id === 'openrouter') {
+        body.tools = [{ type: 'openrouter:web_search' }];
+      }
+    }
     if (provider.id === 'claudecode' || provider.id === 'codex') {
       const reasoning = modelReasoning(provider, model);
       const effort = String(payload.reasoningEffort || settings.reasoningEfforts[provider.id] || reasoning?.default || '');
       if (reasoning?.efforts?.includes(effort)) body.reasoning_effort = effort;
     }
-    if (provider.id === 'claudecode' && (payload.fastMode ?? settings.fastMode)) body.fast_mode = true;
+    if (provider.id === 'openai' && /^gpt-6(?:-|$)/.test(model)) {
+      const reasoning = modelReasoning(provider, model);
+      const requested = payload.reasoningEffort || settings.reasoningEfforts[provider.id];
+      const effort = reasoning?.efforts.includes(requested) ? requested : reasoning?.default || 'medium';
+      delete body.temperature;
+      if (responseProtocol === 'openai-responses') body.reasoning = { ...body.reasoning, effort };
+      else body.reasoning_effort = effort;
+    }
+    if (provider.id === 'codex' && webSearch) body.web_search = true;
+    if (providerSupportsFastMode(provider) && (payload.fastMode ?? settings.fastMode)) body.fast_mode = true;
   }
 
   return {
     provider,
     model,
-    url: endpoint,
+    url: requestUrl,
+    responseProtocol,
+    webSearch,
     fetchOptions: { method: 'POST', headers, body: JSON.stringify(body) }
   };
 }
@@ -267,6 +443,12 @@ function textFromOpenAiEvent(data) {
   return '';
 }
 
+function textFromOpenAiResponsesEvent(data) {
+  return data?.type === 'response.output_text.delta' && typeof data.delta === 'string'
+    ? data.delta
+    : '';
+}
+
 function textFromAnthropicEvent(data) {
   if (data?.type === 'content_block_delta' && data?.delta?.type === 'text_delta') return data.delta.text || '';
   return '';
@@ -277,21 +459,96 @@ function textFromCohereEvent(data) {
   return '';
 }
 
-function textFromJsonResponse(provider, data) {
-  if (provider.protocol === 'anthropic') {
+function textFromOpenAiResponses(data) {
+  if (typeof data?.output_text === 'string') return data.output_text;
+  return (data?.output || []).flatMap((item) => item?.content || [])
+    .filter((part) => part?.type === 'output_text' && typeof part.text === 'string')
+    .map((part) => part.text)
+    .join('');
+}
+
+function textFromJsonResponse(request, data) {
+  if (request.responseProtocol === 'openai-responses') return textFromOpenAiResponses(data);
+  if (request.provider.protocol === 'anthropic') {
     return (data?.content || []).map((part) => part?.text || '').join('');
   }
-  if (provider.protocol === 'ollama') return data?.message?.content || data?.response || '';
-  if (provider.protocol === 'cohere') return (data?.message?.content || []).map((part) => part?.text || '').join('');
+  if (request.provider.protocol === 'ollama') return data?.message?.content || data?.response || '';
+  if (request.provider.protocol === 'cohere') return (data?.message?.content || []).map((part) => part?.text || '').join('');
   const content = data?.choices?.[0]?.message?.content;
   return typeof content === 'string' ? content : (content || []).map((part) => part?.text || '').join('');
 }
 
-async function consumeSse(response, provider, onToken) {
+function addWebCitation(citations, value) {
+  const candidate = value?.url_citation || value?.citation || value;
+  const rawUrl = String(candidate?.url || '').trim();
+  if (!rawUrl) return;
+  let url;
+  try {
+    const parsed = new URL(rawUrl);
+    if (!['http:', 'https:'].includes(parsed.protocol) || parsed.username || parsed.password) return;
+    parsed.hash = '';
+    url = parsed.href;
+  } catch { return; }
+  const fallback = new URL(url).hostname.replace(/^www\./, '');
+  const title = String(candidate?.title || fallback).replace(/\s+/g, ' ').trim().slice(0, 180) || fallback;
+  if (!citations.has(url)) citations.set(url, title);
+}
+
+function collectWebCitations(value, citations) {
+  if (!value) return;
+  if (Array.isArray(value)) {
+    for (const entry of value) collectWebCitations(entry, citations);
+    return;
+  }
+  if (typeof value !== 'object') return;
+  if (value.type === 'url_citation' || value.type === 'web_search_result_location') addWebCitation(citations, value);
+  for (const key of ['annotation', 'annotations', 'citation', 'citations', 'content', 'delta', 'message', 'output', 'response', 'choices']) {
+    collectWebCitations(value[key], citations);
+  }
+}
+
+function containsWebSearchMarker(value) {
+  if (!value) return false;
+  if (Array.isArray(value)) return value.some(containsWebSearchMarker);
+  if (typeof value !== 'object') return false;
+  if (value.web_search_used === true) return true;
+  if (/web_search/i.test(String(value.type || '')) || /^web_search$/i.test(String(value.name || ''))) return true;
+  return ['annotation', 'annotations', 'citation', 'citations', 'content', 'delta', 'message', 'output', 'response', 'choices']
+    .some((key) => containsWebSearchMarker(value[key]));
+}
+
+function markdownSources(citations) {
+  const entries = [...citations.entries()].slice(0, 10);
+  if (!entries.length) return '';
+  const lines = entries.map(([url, title]) => {
+    const safeTitle = title.replace(/\\/g, '\\\\').replace(/\[/g, '\\[').replace(/\]/g, '\\]');
+    const safeUrl = url.replace(/\\/g, '%5C').replace(/\(/g, '%28').replace(/\)/g, '%29');
+    return `- [${safeTitle}](${safeUrl})`;
+  });
+  return `\n\n### Sources\n${lines.join('\n')}`;
+}
+
+function finalizeProviderText(request, text, citations, webSearchUsed, onToken, reasoning = '') {
+  const sources = request.webSearch ? markdownSources(citations) : '';
+  const complete = `${text}${sources}`;
+  if (sources) onToken(sources);
+  return {
+    text: complete,
+    reasoning: boundedProviderReasoning(reasoning),
+    webSearch: request.webSearch,
+    webSearchUsed: Boolean(request.webSearch && (webSearchUsed || citations.size)),
+    sourceCount: request.webSearch ? citations.size : 0
+  };
+}
+
+async function consumeSse(response, request, onToken, onReasoning) {
   const reader = response.body.getReader();
   const decoder = new TextDecoder();
   let buffer = '';
   let complete = '';
+  let reasoning = '';
+  let webSearchUsed = false;
+  const citations = new Map();
 
   const processBlock = (block) => {
     const dataLines = block.split(/\r?\n/).filter((line) => line.startsWith('data:')).map((line) => line.slice(5).trim());
@@ -300,12 +557,23 @@ async function consumeSse(response, provider, onToken) {
     if (raw === '[DONE]') return;
     let data;
     try { data = JSON.parse(raw); } catch { return; }
-    if (data?.type === 'error' || data?.error) {
-      throw new Error(data?.error?.message || data?.message || 'The provider stream reported an error.');
+    const streamError = data?.type === 'response.failed' ? data?.response?.error : data?.error;
+    if (data?.type === 'error' || streamError) {
+      throw new Error(streamError?.message || data?.message || 'The provider stream reported an error.');
     }
-    const token = provider.protocol === 'anthropic'
+    collectWebCitations(data, citations);
+    webSearchUsed ||= containsWebSearchMarker(data);
+    const reasoningDelta = reasoningDeltaFromProviderEvent(data, {
+      protocol: request.provider.protocol,
+      responseProtocol: request.responseProtocol
+    });
+    reasoning += reasoningDelta;
+    if (reasoningDelta) onReasoning(reasoningDelta);
+    const token = request.responseProtocol === 'openai-responses'
+      ? textFromOpenAiResponsesEvent(data)
+      : request.provider.protocol === 'anthropic'
       ? textFromAnthropicEvent(data)
-      : provider.protocol === 'cohere'
+      : request.provider.protocol === 'cohere'
         ? textFromCohereEvent(data)
         : textFromOpenAiEvent(data);
     if (token) {
@@ -328,14 +596,15 @@ async function consumeSse(response, provider, onToken) {
     }
   }
 
-  return complete;
+  return finalizeProviderText(request, complete, citations, webSearchUsed, onToken, reasoning);
 }
 
-async function consumeNdjson(response, onToken) {
+async function consumeNdjson(response, onToken, onReasoning) {
   const reader = response.body.getReader();
   const decoder = new TextDecoder();
   let buffer = '';
   let complete = '';
+  let reasoning = '';
 
   while (true) {
     const { value, done } = await reader.read();
@@ -347,6 +616,9 @@ async function consumeNdjson(response, onToken) {
       let data;
       try { data = JSON.parse(line); } catch { continue; }
       const token = data?.message?.content || data?.response || '';
+      const reasoningDelta = reasoningDeltaFromProviderEvent(data, { protocol: 'ollama' });
+      reasoning += reasoningDelta;
+      if (reasoningDelta) onReasoning(reasoningDelta);
       if (token) {
         complete += token;
         onToken(token);
@@ -359,10 +631,13 @@ async function consumeNdjson(response, onToken) {
     try {
       const data = JSON.parse(buffer);
       const token = data?.message?.content || data?.response || '';
+      const reasoningDelta = reasoningDeltaFromProviderEvent(data, { protocol: 'ollama' });
+      reasoning += reasoningDelta;
+      if (reasoningDelta) onReasoning(reasoningDelta);
       if (token) { complete += token; onToken(token); }
     } catch {}
   }
-  return complete;
+  return { text: complete, reasoning: boundedProviderReasoning(reasoning) };
 }
 
 function opencodeModel(model) {
@@ -371,16 +646,23 @@ function opencodeModel(model) {
   return { providerID: model.slice(0, separator), modelID: model.slice(separator + 1) };
 }
 
+function preparedImageFilename(message, index) {
+  if (!message?.image) return '';
+  const extension = message.image.mediaType.split('/')[1]?.replace('jpeg', 'jpg') || 'png';
+  return `scholia-turn-${index + 1}.${extension}`;
+}
+
 function opencodeTranscript(prepared) {
   return [
-    { role: 'system', content: systemPrompt(prepared.language) },
+    { role: 'system', content: systemPrompt(prepared.language, { learningMode: prepared.learningMode }) },
     ...prepared.conversation
-  ].map((message) => {
+  ].map((message, index) => {
     const role = message.role === 'assistant' ? 'Assistant' : message.role === 'system' ? 'System' : 'User';
     const content = typeof message.content === 'string'
       ? message.content
       : (message.content || []).map((part) => part?.type === 'text' ? part.text : '').filter(Boolean).join(' ');
-    return `${role}:\n${content}`;
+    const image = preparedImageFilename(message, index - 1);
+    return `${role}:\n${content}${image ? `\n[Attached image: ${image}]` : ''}`;
   }).join('\n\n');
 }
 
@@ -405,11 +687,9 @@ function opencodeRelayFallback(model) {
   return `opencode-go/${model.slice(separator + 1)}`;
 }
 
-async function runOpencode(request, onToken, signal) {
-  const { provider, prepared, model, url: base, key } = request;
+async function runOpencode(request, onToken, signal, onReasoning) {
+  const { provider, prepared, model, variant, url: base, key } = request;
   const headers = key ? { authorization: basicAuthorization('opencode', key) } : {};
-  const cacheKey = `${base}\n${key ? 'authenticated' : 'anonymous'}`;
-  let sessionId = opencodeSessions.get(cacheKey) || '';
 
   async function requestJson(path, init = {}) {
     let response;
@@ -427,25 +707,23 @@ async function runOpencode(request, onToken, signal) {
     return response.json();
   }
 
-  async function session() {
-    if (sessionId) return sessionId;
+  async function createSession() {
     const data = await requestJson('/session', {
       method: 'POST', headers: { 'content-type': 'application/json' }, body: '{}'
     });
-    sessionId = String(data?.id || '');
-    if (!sessionId) throw new Error('opencode did not return a session id.');
-    opencodeSessions.set(cacheKey, sessionId);
-    return sessionId;
+    const id = String(data?.id || '');
+    if (!id) throw new Error('opencode did not return a session id.');
+    return id;
   }
 
   const parts = [{ type: 'text', text: opencodeTranscript(prepared) }];
-  if (prepared.image) {
-    const extension = prepared.image.mediaType.split('/')[1]?.replace('jpeg', 'jpg') || 'png';
+  for (const [index, message] of prepared.conversation.entries()) {
+    if (!message.image) continue;
     parts.push({
       type: 'file',
-      mime: prepared.image.mediaType,
-      url: `data:${prepared.image.mediaType};base64,${prepared.image.base64}`,
-      filename: `scholia-capture.${extension}`
+      mime: message.image.mediaType,
+      url: `data:${message.image.mediaType};base64,${message.image.base64}`,
+      filename: preparedImageFilename(message, index)
     });
   }
 
@@ -453,7 +731,7 @@ async function runOpencode(request, onToken, signal) {
     return requestJson(`/session/${encodeURIComponent(id)}/message`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ model: opencodeModel(chosenModel), parts })
+      body: JSON.stringify({ model: opencodeModel(chosenModel), ...(variant ? { variant } : {}), parts })
     });
   }
 
@@ -471,14 +749,18 @@ async function runOpencode(request, onToken, signal) {
     }
   }
 
+  // Every request already contains Scholia's complete bounded transcript.
+  // Reusing one opencode session across unrelated chats duplicated that
+  // transcript and allowed one bad attachment to poison all future requests.
+  // A request-scoped session keeps the browser and native clients consistent.
+  let sessionId = await createSession();
   let data;
   try {
-    data = await attempt(await session());
+    data = await attempt(sessionId);
   } catch (error) {
-    if (sessionId && /session|404/i.test(error?.message || '')) {
-      opencodeSessions.delete(cacheKey);
-      sessionId = '';
-      data = await attempt(await session());
+    if (/session|404/i.test(error?.message || '')) {
+      sessionId = await createSession();
+      data = await attempt(sessionId);
     } else {
       throw error;
     }
@@ -486,16 +768,20 @@ async function runOpencode(request, onToken, signal) {
   const providerError = opencodeError(data);
   if (providerError) throw providerError;
   const text = opencodeText(data);
+  const reasoning = reasoningFromOpencodeResponse(data);
   if (!text.trim()) throw new Error('opencode returned an empty response. Try a different model.');
+  if (reasoning) onReasoning(reasoning);
   onToken(text);
-  return { text, provider: provider.id, model };
+  return { text, reasoning, provider: provider.id, model };
 }
 
-export async function runCompletion(payload, settings, onToken = () => {}, signal) {
+export async function runCompletion(payload, settings, onToken = () => {}, signal, onReasoning = () => {}) {
   const merged = mergeSettings(settings);
   const provider = providerById(payload.provider || merged.provider);
   let effectivePayload = payload;
-  if (payload.imageDataUrl && provider.imageCapability === 'bridge-health') {
+  const hasImage = Boolean(payload.imageDataUrl)
+    || (Array.isArray(payload.messages) && payload.messages.some((message) => Boolean(message?.imageDataUrl)));
+  if (hasImage && provider.imageCapability === 'bridge-health') {
     const status = await checkBridgeStatus(provider.id, merged, { signal });
     if (!status.up) throw new Error(`${provider.localBridge.label} is offline. Start it before sending this image.`);
     if (!status.supportsImages) {
@@ -504,7 +790,7 @@ export async function runCompletion(payload, settings, onToken = () => {}, signa
     effectivePayload = { ...payload, bridgeSupportsImages: true };
   }
   const request = buildProviderRequest(effectivePayload, merged);
-  if (request.provider.protocol === 'opencode') return runOpencode(request, onToken, signal);
+  if (request.provider.protocol === 'opencode') return runOpencode(request, onToken, signal, onReasoning);
 
   let response;
   try {
@@ -520,16 +806,35 @@ export async function runCompletion(payload, settings, onToken = () => {}, signa
 
   const contentType = response.headers.get('content-type') || '';
   if (contentType.includes('application/json')) {
-    const text = textFromJsonResponse(request.provider, await response.json());
+    const data = await response.json();
+    const text = textFromJsonResponse(request, data);
+    const reasoning = reasoningFromProviderResponse(data, {
+      protocol: request.provider.protocol,
+      responseProtocol: request.responseProtocol
+    });
     if (!text.trim()) throw new Error(`${request.provider.name} returned an empty response.`);
+    if (reasoning) onReasoning(reasoning);
     if (text) onToken(text);
-    return { text, provider: request.provider.id, model: request.model };
+    const citations = new Map();
+    collectWebCitations(data, citations);
+    return {
+      ...finalizeProviderText(
+        request,
+        text,
+        citations,
+        containsWebSearchMarker(data),
+        onToken,
+        reasoning
+      ),
+      provider: request.provider.id,
+      model: request.model
+    };
   }
 
-  const text = request.provider.protocol === 'ollama'
-    ? await consumeNdjson(response, onToken)
-    : await consumeSse(response, request.provider, onToken);
+  const completion = request.provider.protocol === 'ollama'
+    ? { ...await consumeNdjson(response, onToken, onReasoning), webSearch: false, webSearchUsed: false, sourceCount: 0 }
+    : await consumeSse(response, request, onToken, onReasoning);
 
-  if (!text.trim()) throw new Error(`${request.provider.name} returned an empty response.`);
-  return { text, provider: request.provider.id, model: request.model };
+  if (!completion.text.trim()) throw new Error(`${request.provider.name} returned an empty response.`);
+  return { ...completion, provider: request.provider.id, model: request.model };
 }

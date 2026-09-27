@@ -17,6 +17,7 @@ const SERVICE = 'claude-code-bridge';
 const MODELS = ['fable', 'opus', 'sonnet', 'haiku'];
 const EFFORTS = ['low', 'medium', 'high', 'xhigh', 'max'];
 const MAX_BODY_BYTES = 10 * 1024 * 1024;
+const MAX_REASONING_CHARACTERS = 24_000;
 const DEFAULT_SYSTEM = 'You are a helpful assistant.';
 const IMAGE_PLACEHOLDER = '[image attached but this provider is text-only]';
 
@@ -275,6 +276,7 @@ function handleChatCompletion(req, res, body) {
   let sawDelta = false;
   let resultObj = null;
   const textParts = [];
+  const reasoningParts = [];
   let stderrTail = '';
   let stdoutRemainder = '';
 
@@ -342,6 +344,16 @@ function handleChatCompletion(req, res, body) {
     }
   };
 
+  const onReasoning = (text) => {
+    if (!text || reasoningParts.join('').length >= MAX_REASONING_CHARACTERS) return;
+    const bounded = text.slice(0, MAX_REASONING_CHARACTERS - reasoningParts.join('').length);
+    reasoningParts.push(bounded);
+    if (stream) {
+      startStream();
+      writeSse(chunkPayload({ reasoning_content: bounded }, null));
+    }
+  };
+
   const handleLine = (line) => {
     line = line.trim();
     if (!line) return;
@@ -352,6 +364,9 @@ function handleChatCompletion(req, res, body) {
       if (ev.type === 'content_block_delta' && ev.delta && ev.delta.type === 'text_delta' &&
           typeof ev.delta.text === 'string') {
         onText(ev.delta.text);
+      } else if (ev.type === 'content_block_delta' && ev.delta?.type === 'thinking_delta' &&
+          typeof ev.delta.thinking === 'string') {
+        onReasoning(ev.delta.thinking);
       }
     } else if (obj && obj.type === 'result') {
       resultObj = obj;
@@ -381,6 +396,7 @@ function handleChatCompletion(req, res, body) {
 
     if (ok) {
       const content = sawDelta ? textParts.join('') : resultText;
+      const reasoning = reasoningParts.join('').trim();
       const usage = mapUsage(resultObj && resultObj.usage);
       const cost = resultObj && typeof resultObj.total_cost_usd === 'number'
         ? `$${resultObj.total_cost_usd.toFixed(6)}` : 'n/a';
@@ -399,7 +415,15 @@ function handleChatCompletion(req, res, body) {
           object: 'chat.completion',
           created,
           model,
-          choices: [{ index: 0, message: { role: 'assistant', content }, finish_reason: 'stop' }]
+          choices: [{
+            index: 0,
+            message: {
+              role: 'assistant',
+              content,
+              ...(reasoning ? { reasoning_content: reasoning } : {})
+            },
+            finish_reason: 'stop'
+          }]
         };
         if (usage) payload.usage = usage;
         sendJson(res, 200, payload, cors);

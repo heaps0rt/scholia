@@ -1,4 +1,8 @@
+import { normalizeFileAttachments } from '../../../packages/core/src/file-attachments.js';
 const MAX_TURN_SELECTION_LENGTH = 12_000;
+const MAX_TURN_IMAGE_DATA_URL_LENGTH = 8_000_000;
+
+export const DEFAULT_IMAGE_EXPLANATION = 'Explain this image.';
 
 function cleanQuestion(value) {
   return String(value || '').trim();
@@ -14,6 +18,20 @@ function cleanSelection(value) {
     .slice(0, MAX_TURN_SELECTION_LENGTH);
 }
 
+export function canExplainImageDirectly({
+  kind = '',
+  imageDataUrl = '',
+  question = '',
+  messageCount = 0,
+  hasAttachments = false
+} = {}) {
+  return kind === 'image'
+    && Boolean(String(imageDataUrl || ''))
+    && !cleanQuestion(question)
+    && Number(messageCount) === 0
+    && !hasAttachments;
+}
+
 export function normalizeSelectionAttachment(attachment = null) {
   const text = cleanSelection(attachment?.text);
   if (!text) return null;
@@ -25,6 +43,14 @@ export function normalizeSelectionAttachment(attachment = null) {
     embedded: Boolean(attachment?.embedded),
     messageIndex: Number.isInteger(attachment?.messageIndex) ? attachment.messageIndex : null
   };
+}
+
+export function normalizeTurnImageDataUrl(value = '') {
+  const imageDataUrl = String(value || '');
+  if (!imageDataUrl || imageDataUrl.length > MAX_TURN_IMAGE_DATA_URL_LENGTH) return '';
+  return /^data:image\/[a-z0-9.+-]+;base64,[a-z0-9+/=\r\n]+$/i.test(imageDataUrl)
+    ? imageDataUrl
+    : '';
 }
 
 export function turnRequestContent(question, attachment = null) {
@@ -44,14 +70,17 @@ export function turnRequestContent(question, attachment = null) {
   ].join('\n');
 }
 
-export function createUserTurn(question, attachment = null) {
+export function createUserTurn(question, attachment = null, { imageDataUrl = '', files = [] } = {}) {
   const content = cleanQuestion(question);
   if (!content) return null;
   const selected = normalizeSelectionAttachment(attachment);
+  const image = normalizeTurnImageDataUrl(imageDataUrl);
   return {
     role: 'user',
     content,
     ...(selected ? { attachment: selected } : {}),
+    ...(image ? { imageDataUrl: image } : {}),
+    ...(files.length ? { files: normalizeFileAttachments(files) } : {}),
     requestContent: turnRequestContent(content, selected)
   };
 }
@@ -59,8 +88,13 @@ export function createUserTurn(question, attachment = null) {
 export function requestConversation(messages = []) {
   return messages
     .filter((entry) => entry && !entry.error && (entry.role === 'user' || entry.role === 'assistant'))
-    .map((entry) => ({
-      role: entry.role,
-      content: entry.role === 'user' ? String(entry.requestContent || entry.content || '') : String(entry.content || '')
-    }));
+    .map((entry) => {
+      const imageDataUrl = entry.role === 'user' ? normalizeTurnImageDataUrl(entry.imageDataUrl) : '';
+      return {
+        role: entry.role,
+        content: entry.role === 'user' ? String(entry.requestContent || turnRequestContent(entry.content, entry.attachment)) : String(entry.content || ''),
+        ...(imageDataUrl ? { imageDataUrl } : {}),
+        ...(entry.role === 'user' && entry.files?.length ? { files: normalizeFileAttachments(entry.files) } : {})
+      };
+    });
 }

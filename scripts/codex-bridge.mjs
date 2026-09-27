@@ -1,18 +1,23 @@
 #!/usr/bin/env node
 /**
  * OpenAI-compatible loopback bridge for a locally authenticated Codex CLI.
- * Every completion is ephemeral, read-only, non-interactive, and has web
- * search disabled. Base64 image blocks are materialized only for the lifetime
- * of the matching Codex process and passed through `codex exec --image`.
+ * Every completion is ephemeral, read-only, and non-interactive. Web search is
+ * enabled only for a request that explicitly opts in. Base64 image blocks are
+ * materialized only for the lifetime of the matching Codex process and passed
+ * through `codex exec --image`.
  */
 import { execFile, spawn } from 'node:child_process';
 import { createHash, randomUUID, timingSafeEqual } from 'node:crypto';
 import http from 'node:http';
 import os from 'node:os';
+import { buildCodexExecArguments } from './lib/codex-cli-arguments.mjs';
 import { materializeCodexImages } from './lib/codex-images.mjs';
 
 const MODELS = [
   'gpt-5.5',
+  'gpt-6-astra',
+  'gpt-6-sol',
+  'gpt-6-luna',
   'gpt-5.6-sol',
   'gpt-5.6-terra',
   'gpt-5.6-luna',
@@ -22,7 +27,8 @@ const MODELS = [
 const EFFORTS = ['minimal', 'low', 'medium', 'high', 'xhigh', 'max', 'ultra'];
 const MAX_BODY_BYTES = 10 * 1024 * 1024;
 const USAGE_TTL_MS = 45_000;
-const BRIDGE_VERSION = '0.2.0';
+const BRIDGE_VERSION = '0.6.0';
+const MAX_REASONING_CHARACTERS = 24_000;
 const LOCAL_ORIGIN = /^https?:\/\/(?:localhost|127\.0\.0\.1)(?::\d+)?$/i;
 const EXTENSION_ORIGIN = /^chrome-extension:\/\/[a-p]{32}$/i;
 
@@ -115,7 +121,7 @@ function messageText(content) {
     .join('\n');
 }
 
-function buildPrompt(messages) {
+function buildPrompt(messages, { webSearch = false } = {}) {
   const transcript = messages
     .filter((message) => message && ['system', 'user', 'assistant'].includes(message.role))
     .map((message) => {
@@ -123,7 +129,25 @@ function buildPrompt(messages) {
       return `${role}: ${messageText(message.content)}`;
     })
     .join('\n\n');
-  return `${transcript}\n\nAnswer the user directly. Do not inspect files, run commands, use tools, or modify the workspace.`;
+  const boundary = webSearch
+    ? 'Web search is enabled for this request. Use it when it helps answer the question and preserve source links. Do not inspect files, run commands, use other tools, or modify the workspace.'
+    : 'Do not inspect files, run commands, use tools, or modify the workspace.';
+  return `${transcript}\n\nAnswer the user directly. ${boundary}`;
+}
+
+function reasoningItemText(item) {
+  if (!item || item.type !== 'reasoning') return '';
+  if (typeof item.text === 'string') return item.text;
+  if (typeof item.summary === 'string') return item.summary;
+  for (const value of [item.summary, item.content]) {
+    if (!Array.isArray(value)) continue;
+    const text = value
+      .map((part) => typeof part === 'string' ? part : part?.text || part?.summary || '')
+      .filter(Boolean)
+      .join('\n\n');
+    if (text) return text;
+  }
+  return '';
 }
 
 function stopChild(child) {
@@ -218,6 +242,7 @@ function completion(request, response, body) {
     return;
   }
   const effort = EFFORTS.includes(body.reasoning_effort) ? body.reasoning_effort : 'high';
+  const webSearch = body.web_search === true;
   let imageFiles;
   try {
     imageFiles = materializeCodexImages(body.messages);
@@ -225,23 +250,13 @@ function completion(request, response, body) {
     sendError(response, 400, error.message || 'Invalid image attachment.', headers);
     return;
   }
-  const cliArguments = [
-    'exec',
-    '-',
-    '--json',
-    '--ephemeral',
-    '--skip-git-repo-check',
-    '--ignore-rules',
-    '--color',
-    'never',
-    '--sandbox',
-    'read-only',
-    '--model',
+  const cliArguments = buildCodexExecArguments({
     model,
-    '--config',
-    `model_reasoning_effort="${effort}"`
-  ];
-  if (imageFiles.paths.length) cliArguments.push('--image', ...imageFiles.paths);
+    effort,
+    fastMode: body.fast_mode === true || body.fast === true,
+    webSearch,
+    imagePaths: imageFiles.paths
+  });
   let child;
   try {
     child = spawn(options.codex, cliArguments, {
@@ -256,27 +271,124 @@ function completion(request, response, body) {
   }
 
   let answer = '';
+  const reasoningParts = [];
   let buffer = '';
   let stderr = '';
   let spawnError = null;
   let timedOut = false;
   let disconnected = false;
+  let webSearchUsed = false;
   let forceKillTimer = null;
+  let turnFailure = '';
+  let finalized = false;
+  let cleaned = false;
   const timeout = setTimeout(() => {
     timedOut = true;
     forceKillTimer = stopChild(child);
   }, options.timeout * 1_000);
 
+  const cleanupImages = () => {
+    if (cleaned) return;
+    cleaned = true;
+    imageFiles.cleanup();
+  };
+
+  const finish = ({ code = null, turnCompleted = false } = {}) => {
+    if (finalized || disconnected) return;
+    if (!turnCompleted && code == null) return;
+    finalized = true;
+    clearTimeout(timeout);
+    cleanupImages();
+
+    if (timedOut || turnFailure || (code != null && code !== 0) || spawnError || !answer) {
+      const errorLines = stderr.trim().split('\n').map((line) => line.trim()).filter(Boolean);
+      const usefulError = errorLines.find((line) => /^error:/i.test(line))
+        || errorLines.find((line) => !/^warning:/i.test(line));
+      const detail = timedOut
+        ? `Codex timed out after ${options.timeout} seconds.`
+        : turnFailure || spawnError?.message || usefulError || `Codex exited with status ${code}.`;
+      sendError(response, timedOut ? 504 : 502, `Codex CLI failed: ${detail}`, headers);
+    } else {
+      const id = `chatcmpl-${randomUUID()}`;
+      const created = Math.floor(Date.now() / 1_000);
+      const reasoning = reasoningParts.join('\n\n').slice(0, MAX_REASONING_CHARACTERS);
+      if (body.stream === true) {
+        response.writeHead(200, {
+          'Content-Type': 'text/event-stream; charset=utf-8',
+          'Cache-Control': 'no-cache',
+          ...headers
+        });
+        const chunk = {
+          id,
+          object: 'chat.completion.chunk',
+          created,
+          model,
+          web_search_used: webSearchUsed,
+          choices: [{
+            index: 0,
+            delta: {
+              role: 'assistant',
+              content: answer,
+              ...(reasoning ? { reasoning_content: reasoning } : {})
+            },
+            finish_reason: null
+          }]
+        };
+        const done = {
+          ...chunk,
+          choices: [{ index: 0, delta: {}, finish_reason: 'stop' }]
+        };
+        response.write(`data: ${JSON.stringify(chunk)}\n\n`);
+        response.write(`data: ${JSON.stringify(done)}\n\n`);
+        response.end('data: [DONE]\n\n');
+      } else {
+        sendJson(response, 200, {
+          id,
+          object: 'chat.completion',
+          created,
+          model,
+          web_search_used: webSearchUsed,
+          choices: [{
+            index: 0,
+            message: {
+              role: 'assistant',
+              content: answer,
+              ...(reasoning ? { reasoning_content: reasoning } : {})
+            },
+            finish_reason: 'stop'
+          }]
+        }, headers);
+      }
+      if (options.verbose) console.log(`[codex-bridge] model=${model} effort=${effort} webSearch=${webSearch} ok`);
+    }
+
+    // `codex exec` has occasionally lingered after its completed-turn event.
+    // The result is final at this point, so do not make the browser wait for
+    // process shutdown before receiving it.
+    if (turnCompleted && child.exitCode == null) forceKillTimer = stopChild(child);
+  };
+
   const handleLine = (line) => {
     try {
       const event = JSON.parse(line);
       const item = event.item || event;
+      if (/web_search/i.test(String(item.type || event.type || item.name || ''))) webSearchUsed = true;
       if (item.type === 'agent_message' && typeof item.text === 'string') answer = item.text;
+      if (event.type === 'item.completed' && item.type === 'reasoning') {
+        const reasoning = reasoningItemText(item).trim();
+        if (reasoning) reasoningParts.push(reasoning);
+      }
+      if (event.type === 'turn.failed') {
+        turnFailure = String(event.error?.message || event.message || 'The Codex turn failed.');
+        finish({ turnCompleted: true });
+      } else if (event.type === 'turn.completed') {
+        finish({ turnCompleted: true });
+      }
     } catch {}
   };
 
   child.stdin.on('error', () => {});
-  child.stdin.end(buildPrompt(body.messages));
+  child.stdin.end(buildPrompt(body.messages, { webSearch }));
   child.stdout.on('data', (chunk) => {
     buffer += chunk.toString('utf8');
     let newline;
@@ -290,60 +402,17 @@ function completion(request, response, body) {
   response.on('close', () => {
     if (!response.writableEnded) {
       disconnected = true;
+      clearTimeout(timeout);
+      cleanupImages();
       forceKillTimer = stopChild(child);
     }
   });
 
   child.on('close', (code) => {
-    clearTimeout(timeout);
     if (forceKillTimer) clearTimeout(forceKillTimer);
-    imageFiles.cleanup();
-    if (response.writableEnded || disconnected) return;
+    if (finalized || disconnected) return;
     if (buffer.trim()) handleLine(buffer);
-
-    if (timedOut || code !== 0 || spawnError || !answer) {
-      const errorLines = stderr.trim().split('\n').map((line) => line.trim()).filter(Boolean);
-      const usefulError = errorLines.find((line) => /^error:/i.test(line))
-        || errorLines.find((line) => !/^warning:/i.test(line));
-      const detail = timedOut
-        ? `Codex timed out after ${options.timeout} seconds.`
-        : spawnError?.message || usefulError || `Codex exited with status ${code}.`;
-      sendError(response, timedOut ? 504 : 502, `Codex CLI failed: ${detail}`, headers);
-      return;
-    }
-
-    const id = `chatcmpl-${randomUUID()}`;
-    const created = Math.floor(Date.now() / 1_000);
-    if (body.stream === true) {
-      response.writeHead(200, {
-        'Content-Type': 'text/event-stream; charset=utf-8',
-        'Cache-Control': 'no-cache',
-        ...headers
-      });
-      const chunk = {
-        id,
-        object: 'chat.completion.chunk',
-        created,
-        model,
-        choices: [{ index: 0, delta: { role: 'assistant', content: answer }, finish_reason: null }]
-      };
-      const done = {
-        ...chunk,
-        choices: [{ index: 0, delta: {}, finish_reason: 'stop' }]
-      };
-      response.write(`data: ${JSON.stringify(chunk)}\n\n`);
-      response.write(`data: ${JSON.stringify(done)}\n\n`);
-      response.end('data: [DONE]\n\n');
-    } else {
-      sendJson(response, 200, {
-        id,
-        object: 'chat.completion',
-        created,
-        model,
-        choices: [{ index: 0, message: { role: 'assistant', content: answer }, finish_reason: 'stop' }]
-      }, headers);
-    }
-    if (options.verbose) console.log(`[codex-bridge] model=${model} effort=${effort} ok`);
+    finish({ code });
   });
 }
 
@@ -398,7 +467,9 @@ const server = http.createServer((request, response) => {
       version: codexVersion,
       models: MODELS,
       efforts: EFFORTS,
-      images: true
+      images: true,
+      fastMode: true,
+      webSearch: true
     }, headers);
     return;
   }

@@ -1,0 +1,236 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <meta name="scholia-token" content="__SCHOLIA_TOKEN__" />
+    <meta name="color-scheme" content="light dark" />
+    <title>Scholia · Your study space</title>
+    <link rel="icon" href="/icon.svg" type="image/svg+xml" />
+    <link rel="stylesheet" href="/app.css" />
+    <script type="module" src="/app.js"></script>
+  </head>
+  <body>
+    <div class="app">
+      <aside class="sidebar" aria-label="Course navigation">
+        <a class="brand" href="#" data-action="library"
+          ><img src="/icon.svg" alt="" /><span>scholia</span><span class="edition">STUDY</span></a
+        >
+        <button class="nav-all" data-action="library">
+          <span>▦</span> Dashboard <span id="course-count" class="count"></span>
+        </button>
+        <div id="workspace-heading" class="section-label">
+          YOUR WORKSPACES <button data-action="create" aria-label="Create workspace">+</button>
+        </div>
+        <nav id="course-nav"></nav>
+        <div id="material-nav"></div>
+        <div id="thread-nav"></div>
+        <div class="sidebar-bottom">
+          <button class="canvas-link" data-action="canvas">
+            <span class="connection-icon">↗</span
+            ><span
+              ><strong>Connect Canvas</strong
+              ><small id="canvas-account">Bring your courses along</small></span
+            ><span>›</span>
+          </button>
+          <div class="companion">
+            <span class="online-dot"></span><span>Connected to your Mac</span>
+          </div>
+          <div class="sidebar-tools">
+            <button data-action="native">Open Mac app ↗</button
+            ><button data-action="quickChat" title="Quick Chat" aria-label="Open Quick Chat">
+              ✧
+            </button>
+          </div>
+        </div>
+      </aside>
+      <main>
+        <header class="topbar">
+          <button class="icon-button mobile-menu" data-action="sidebar" aria-label="Toggle sidebar">
+            ☰
+          </button>
+          <div id="breadcrumb">Your study space</div>
+          <div class="topbar-actions">
+            <button id="review-due" data-action="reviewDue">Review due</button
+            ><button id="practice-this" data-action="practiceThis" hidden>Practice this</button
+            ><button data-action="canvas">Connect Canvas</button
+            ><button id="add-document" data-action="upload">＋ Add documents</button
+            ><button data-action="create" class="primary">New workspace</button>
+          </div>
+        </header>
+        <div id="connection-error" class="connection-error" role="alert" hidden></div>
+        <section id="library" class="library"></section>
+        <section id="workspace" class="workspace" hidden>
+          <section class="reader" aria-label="Document reader">
+            <div id="assignment-page" hidden></div>
+            <div id="reader-toolbar" class="reader-toolbar"></div>
+            <div id="reader-content" class="reader-content"></div>
+            <footer id="reader-footer" class="reader-footer"></footer>
+          </section>
+          <div
+            id="tutor-divider"
+            class="tutor-divider"
+            role="separator"
+            tabindex="0"
+            aria-label="Resize document and AI chat"
+            aria-orientation="vertical"
+            aria-controls="reader-content"
+            title="Drag to resize AI chat. Double-click to reset."
+          ></div>
+          <aside class="tutor" aria-label="Study tutor">
+            <header class="tutor-heading">
+              <div class="tutor-title">
+                <span class="tutor-mark">✧</span>
+                <div>
+                  <strong>A little understanding</strong><small>Your course, in conversation</small>
+                </div>
+              </div>
+              <button
+                class="icon-button"
+                data-action="newThread"
+                aria-label="New conversation"
+                title="New conversation"
+              >
+                ＋
+              </button>
+            </header>
+            <div class="tutor-modes" role="group" aria-label="Teaching style">
+              <button data-mode="Explain">Explain</button
+              ><button data-mode="Guide me">Guide me</button
+              ><button data-mode="Practice">Practice</button>
+            </div>
+            <p id="mode-description" class="mode-description"></p>
+            <details class="context-details">
+              <summary>
+                <span class="online-dot"></span
+                ><span id="context-label">Grounded in your course</span><span>⌄</span>
+              </summary>
+              <p>
+                Questions include the current page, selected text, and your document. Long readings
+                use relevant pages from the complete local text index. Vision models also see page
+                images.
+              </p>
+              <label
+                ><input type="checkbox" id="include-course" checked /> Include downloaded course
+                materials</label
+              >
+              <p>Cloud materials enter the tutor's context after you open and download them.</p>
+              <small id="context-summary"></small>
+            </details>
+            <div id="messages" class="messages" aria-live="polite"></div>
+            <button id="latest-answer" class="latest-answer" data-action="latestAnswer" hidden>
+              ↓ Latest message
+            </button>
+            <div id="edit-notice" class="selection-note" hidden>
+              Editing your earlier question. <button data-action="cancelEdit">Cancel edit</button>
+            </div>
+            <div id="question-image" class="question-image" hidden></div>
+            <div id="selection-note" class="selection-note" hidden></div>
+            <p id="draft-conflict" class="practice-warning" role="alert" hidden>
+              Your draft belongs to an earlier reading or version. It is retained here.
+              <button data-action="copyDraft">Copy draft</button>
+              <button data-action="loadCurrentDraft">Load current draft</button>
+            </p>
+            <form id="composer" class="composer">
+              <textarea
+                id="question"
+                rows="3"
+                placeholder="Ask a question, or follow your curiosity…"
+                aria-label="Your question"
+              ></textarea>
+              <div class="composer-controls">
+                <button
+                  type="button"
+                  data-action="attach"
+                  class="icon-button"
+                  title="Attach an image"
+                  aria-label="Attach an image"
+                >
+                  ＋</button
+                ><label class="model-select"
+                  ><span class="sr-only">Model</span
+                  ><select id="model-picker" aria-label="Model"></select></label
+                ><button id="send" type="submit" class="send" aria-label="Send question">↑</button>
+              </div>
+            </form>
+            <p class="composer-note">Enter to send · Shift + Enter for a new line</p>
+          </aside>
+        </section>
+        <footer id="status" class="status" aria-live="polite" hidden></footer>
+      </main>
+    </div>
+    <dialog id="practice-dialog" aria-label="Practice and review"></dialog>
+    <dialog id="canvas-dialog">
+      <form method="dialog" class="dialog-heading">
+        <span class="eyebrow">YOUR COURSES, TOGETHER</span><button aria-label="Close">×</button>
+      </form>
+      <h2>Bring your courses along.</h2>
+      <p>Index your library now. Read at your own pace.</p>
+      <label class="field"
+        >Canvas address<input id="canvas-origin" value="https://canvas.ntnu.no"
+      /></label>
+      <div class="sync-options">
+        <label
+          ><input type="radio" name="sync-mode" value="index" checked /><span
+            ><strong>Index first</strong
+            ><small
+              >All course cards and material titles. Download when you open a reading.</small
+            ></span
+          ><span class="tag">RECOMMENDED</span></label
+        ><label
+          ><input type="radio" name="sync-mode" value="all" /><span
+            ><strong>Download everything</strong
+            ><small
+              >Save supported course materials for offline study. You can stop and resume.</small
+            ></span
+          ></label
+        >
+      </div>
+      <div class="dialog-actions">
+        <button data-action="signIn">Sign in with Mac app ↗</button
+        ><button data-action="connect" class="primary">Index all courses</button>
+      </div>
+      <details>
+        <summary>Connect with a personal access token</summary>
+        <p>Your token is stored in the Mac's Keychain after Canvas verifies it.</p>
+        <input
+          id="canvas-token"
+          type="password"
+          autocomplete="off"
+          placeholder="Canvas personal access token"
+        /><button data-action="connectToken">Connect</button>
+      </details>
+      <p class="fineprint">
+        Courses link to canvas.ntnu.no/courses/{course_id}. Favorites stay in Scholia. Canvas is
+        read-only.
+      </p>
+      <div id="canvas-notices" class="notices"></div>
+    </dialog>
+    <dialog id="create-dialog">
+      <form id="create-form">
+        <div class="dialog-heading">
+          <span class="eyebrow">A NEW PLACE TO LEARN</span
+          ><button type="button" data-action="closeCreate" aria-label="Close">×</button>
+        </div>
+        <h2>Make room for curiosity.</h2>
+        <p>Keep readings, questions, and discoveries together.</p>
+        <label class="field"
+          >Course name<input
+            name="name"
+            placeholder="e.g. Linear algebra"
+            required
+            maxlength="180" /></label
+        ><label class="field"
+          >Course code · optional<input
+            name="code"
+            placeholder="e.g. TMA4115"
+            maxlength="40" /></label
+        ><button type="submit" class="primary">Create workspace</button>
+      </form>
+    </dialog>
+    <input type="file" id="document-upload" hidden multiple />
+    <input type="file" id="image-upload" accept="image/*" hidden />
+    <div id="study-print-pages" class="print-pages" aria-hidden="true"></div>
+    <div id="toast" role="alert" hidden></div>
+  </body>
+</html>

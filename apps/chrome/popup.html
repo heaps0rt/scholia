@@ -1,0 +1,79 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Scholia</title>
+  <link rel="stylesheet" href="vendor/katex/katex.min.css">
+  <link rel="stylesheet" href="popup.css">
+  <link rel="stylesheet" href="file-attachments.css">
+</head>
+<body>
+  <main class="popup-shell">
+    <header class="topbar">
+      <div class="brand"><span class="mark">S</span><div><h1>Scholia</h1><p>Reading companion</p></div></div>
+      <button id="settings" class="icon-button" type="button" title="Open settings" aria-label="Open settings">⚙</button>
+    </header>
+
+    <section class="quick-chat-card">
+      <div class="section-heading">
+        <div><span class="section-label">Quick Chat</span><strong id="quick-context-state">Compact</strong></div>
+        <button id="quick-reset" class="text-button" type="button">Clear</button>
+      </div>
+      <div id="quick-messages" class="quick-messages" aria-live="polite">
+        <p id="quick-empty" class="quick-empty">Ask about what is on screen without opening the sidebar.</p>
+      </div>
+      <div class="quick-context-controls" aria-label="Quick Chat context mode">
+        <button id="quick-compact" class="mode-button" type="button" aria-pressed="true">▤ Compact</button>
+        <button id="quick-none" class="mode-button" type="button" aria-pressed="false">∅ None</button>
+      </div>
+      <div id="quick-files" hidden></div>
+      <form id="quick-form" class="quick-form">
+        <button id="quick-attach" type="button" class="secondary" aria-label="Attach files"></button>
+        <textarea id="quick-input" rows="2" placeholder="Ask about this screen…"></textarea>
+        <button id="quick-send" class="primary" type="submit" aria-label="Send Quick Chat message">↑</button>
+      </form>
+      <p class="quick-hint">Enter to send · Shift+Enter for a new line · Compact off uses full context</p>
+    </section>
+
+    <section class="site-card">
+      <div class="section-label"><span id="site-dot" class="status-dot"></span><span id="site-state">Current website</span></div>
+      <strong id="site">Loading current tab…</strong>
+      <button id="site-toggle" class="secondary full-width" type="button" disabled>Loading website access…</button>
+    </section>
+
+    <section class="launcher">
+      <button id="open-sidebar" class="primary launcher-main" type="button"><span>Open sidebar</span><span aria-hidden="true">→</span></button>
+      <button id="new-chat" class="secondary" type="button">＋ New chat</button>
+      <button id="open-pdf" class="secondary pdf-viewer-launcher" type="button"><span>Open a PDF file or address</span><span aria-hidden="true">＋</span></button>
+      <button id="open-pdf-viewer" class="secondary pdf-viewer-launcher" type="button" hidden><span>Open Scholia PDF view</span><span aria-hidden="true">↗</span></button>
+      <div class="quick-actions">
+        <button id="explain" class="quiet" type="button"><span aria-hidden="true">⌁</span> Explain selection</button>
+        <button id="capture" class="quiet" type="button"><span aria-hidden="true">▣</span> Capture region</button>
+      </div>
+    </section>
+
+    <section class="model-card">
+      <div class="section-heading"><span class="section-label">Active model</span><button id="model-settings" class="text-button" type="button">Configure</button></div>
+      <select id="model-select" aria-label="Active provider and model"></select>
+      <button id="fast-mode" class="fast-mode" type="button" aria-pressed="false">
+        <span aria-hidden="true">⚡</span><span>Fast mode</span><small id="fast-mode-state">Off</small>
+      </button>
+      <p id="model-hint">Changing this applies to new turns.</p>
+    </section>
+
+    <section class="history-card">
+      <div class="section-heading">
+        <div><span class="section-label">Recent chats</span><strong id="chat-count"></strong></div>
+        <button id="clear-chats" class="text-button danger-text" type="button" hidden>Clear all</button>
+      </div>
+      <div id="chat-list" class="chat-list"></div>
+      <p id="chat-empty" class="empty-copy">No saved chats yet. Popup Quick Chat stays temporary; save longer work in the sidebar.</p>
+    </section>
+
+    <p id="status" class="status" role="status"></p>
+    <footer>Chats stay on this device until you delete them.</footer>
+  </main>
+  <script type="module" src="popup.js"></script>
+</body>
+</html>
