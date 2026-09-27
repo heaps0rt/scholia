@@ -1,0 +1,871 @@
+import { randomUUID } from 'node:crypto';
+import { PROVIDERS } from '../../packages/core/src/providers.js';
+import { runCompletion } from '../chrome/src/provider-runtime.js';
+import { Canvas } from './canvas.js';
+import { hash } from './store.js';
+export const hostedProviders = PROVIDERS.filter((p) =>
+  ['openai', 'anthropic', 'openrouter', 'groq', 'together', 'mistral', 'cohere', 'ntnu'].includes(
+    p.id
+  )
+);
+const fail = (message, status = 400) => {
+  throw Object.assign(new Error(message), { status });
+};
+const now = () => Date.now() / 1000;
+const sortNames = (a, b) => a.title.localeCompare(b.title, undefined, { numeric: true });
+const newCourse = (name, code = '') => ({
+  id: randomUUID(),
+  name,
+  code,
+  documents: [],
+  threads: [],
+  canvasMaterials: [],
+});
+export function materialInventory(course) {
+  if (!course) return { groups: [], files: [] };
+  const groups = new Map(),
+    files = [],
+    references = new Set();
+  const add = (ref, doc) => {
+    const title = doc?.title || ref?.title || 'Untitled';
+    const id = doc ? `saved:${doc.id}` : `canvas:${ref.id}`;
+    const entry = {
+      id,
+      title,
+      documentID: doc?.id,
+      materialID: ref?.id,
+      sourceURL: ref?.sourceURL,
+      detail: doc
+        ? `${doc.pageCount} pages · Saved to your account`
+        : ref?.assignment?.locked
+          ? 'Locked in Canvas'
+          : ref?.byteCount > 100_000_000
+            ? 'Larger than 100 MB'
+            : 'Download to read',
+      submissionStatus: ref?.assignment?.status,
+      requiresSubmission:
+        !ref?.assignment ||
+        ref.assignment.submissionTypes.some((type) => !['none', 'not_graded'].includes(type)),
+      updateAvailable: !!(doc && ref?.version && doc.sourceVersion !== ref.version),
+    };
+    let groupID, groupTitle;
+    if (ref?.moduleID) {
+      groupID = `module:${ref.moduleID}`;
+      groupTitle = ref.moduleTitle;
+    } else if (ref?.kind === 'assignments') {
+      groupID = 'exercises';
+      groupTitle = 'Exercises & assignments';
+    } else if (
+      /\b(icon|logo|banner|footer|header)\b/i.test(title) &&
+      /\.(png|jpg|svg|gif)$/i.test(ref?.fileName || doc?.fileName || '')
+    ) {
+      groupID = 'assets';
+      groupTitle = 'Course assets';
+    } else {
+      groupID = 'documents';
+      groupTitle = 'Documents';
+    }
+    if (!groups.has(groupID))
+      groups.set(groupID, {
+        id: groupID,
+        title: groupTitle,
+        basis: ref?.moduleID ? 'Canvas module order' : 'Course materials',
+        order: ref?.modulePosition ?? (groupID === 'assets' ? 100000 : 10000),
+        items: [],
+      });
+    groups.get(groupID).items.push({ ...entry, order: ref?.moduleItemPosition ?? 10000 });
+    if (ref?.kind === 'files' || (!ref && (!doc?.sourceKey || doc.sourceKey.startsWith('files:'))))
+      files.push({
+        ...entry,
+        title: ref?.fileName || doc?.originalFileName || doc?.fileName || title,
+      });
+  };
+  for (const ref of course.canvasMaterials || []) {
+    references.add(ref.id);
+    add(
+      ref,
+      course.documents.find((d) => d.sourceKey === ref.id)
+    );
+  }
+  for (const doc of course.documents) if (!references.has(doc.sourceKey)) add(null, doc);
+  return {
+    groups: [...groups.values()]
+      .sort((a, b) => a.order - b.order)
+      .map((g) => ({ ...g, items: g.items.sort((a, b) => a.order - b.order || sortNames(a, b)) })),
+    files: files.sort(sortNames),
+  };
+}
+export class Workspaces {
+  constructor(store, documents, options = {}) {
+    this.store = store;
+    this.documents = documents;
+    this.options = options;
+    this.accounts = new Map();
+    this.queues = new Map();
+  }
+  account(id) {
+    const time = Date.now(),
+      limit = this.options.maxCachedAccounts || 128;
+    for (const [key, account] of this.accounts) {
+      if (
+        key !== id &&
+        !account.job &&
+        !this.queues.has(key) &&
+        time - account.lastAccess > 30 * 60_000
+      )
+        this.accounts.delete(key);
+    }
+    if (!this.accounts.has(id)) {
+      if (this.accounts.size >= limit) {
+        const idle = [...this.accounts]
+          .filter(([key, account]) => !account.job && !this.queues.has(key))
+          .sort((a, b) => a[1].lastAccess - b[1].lastAccess);
+        if (!idle.length) fail('The server is busy. Try again shortly.', 503);
+        this.accounts.delete(idle[0][0]);
+      }
+      this.accounts.set(id, {
+        ...this.store.account(id),
+        busy: false,
+        streaming: false,
+        error: null,
+        status: null,
+        controller: null,
+      });
+    }
+    const account = this.accounts.get(id);
+    account.lastAccess = time;
+    return account;
+  }
+  assertAvailable(account) {
+    if (account.busy || account.streaming) fail('Wait for the current task to finish.', 409);
+  }
+  async serial(id, work) {
+    if (this.stopping) fail('The server is restarting. Try again shortly.', 503);
+    const previous = this.queues.get(id) || Promise.resolve();
+    const next = previous.catch(() => {}).then(work);
+    this.queues.set(id, next);
+    try {
+      return await next;
+    } finally {
+      if (this.queues.get(id) === next) this.queues.delete(id);
+    }
+  }
+  course(account, navigation) {
+    return account.library.courses.find((c) => c.id === navigation.selectedCourseID);
+  }
+  doc(account, id) {
+    return (
+      account.library.courses.flatMap((c) => c.documents).find((d) => d.id === id) ||
+      fail('Document not found.', 404)
+    );
+  }
+  thread(course, navigation, create = false) {
+    let thread = course?.threads.find((t) => t.id === navigation.selectedThreadID);
+    if (!thread && create) {
+      if (!course) fail('Open a workspace first.');
+      if (course.threads.length >= 200) fail('This workspace has reached its conversation limit.');
+      thread = {
+        id: randomUUID(),
+        title: 'New conversation',
+        documentID: navigation.selectedDocumentID,
+        messages: [],
+        sources: {},
+        draft: '',
+        mode: navigation.mode || 'Explain',
+      };
+      course.threads.push(thread);
+      navigation.selectedThreadID = thread.id;
+    }
+    return thread;
+  }
+  owner(account, nav) {
+    const thread = this.thread(this.course(account, nav), nav);
+    return {
+      courseID: nav.selectedCourseID || null,
+      documentID: nav.selectedDocumentID || null,
+      threadID: thread?.id || null,
+      page: nav.page || 1,
+      revision: hash(
+        `${thread?.draft || ''}\0${nav.mode || 'Explain'}\0${nav.selection || ''}\0${thread?.draftImage || ''}`
+      ),
+    };
+  }
+  validateOwner(account, nav, owner) {
+    const current = this.owner(account, nav);
+    if (!owner || Object.keys(current).some((key) => (owner[key] ?? null) !== current[key]))
+      fail(
+        'The reading or draft changed. Your browser draft is retained; reopen its original reading or copy it first.',
+        409
+      );
+  }
+  async state(session) {
+    const account = this.account(session.user_id),
+      nav = session.navigation;
+    const course = this.course(account, nav),
+      doc = course?.documents.find((d) => d.id === nav.selectedDocumentID),
+      thread = this.thread(course, nav);
+    const index = doc ? await this.documents.index(account.id, doc) : null;
+    const assignment = course?.canvasMaterials?.find((m) => m.id === nav.selectedAssignmentID),
+      instructions = course?.documents.find((d) => d.sourceKey === assignment?.id);
+    const assignmentText = instructions
+      ? (await this.documents.index(account.id, instructions)).pages.map((p) => p.text).join('\n\n')
+      : '';
+    const inventory = materialInventory(course),
+      provider =
+        hostedProviders.find((p) => p.id === account.settings.providerID) || hostedProviders[0];
+    const semesters = new Map();
+    for (const c of account.library.courses) {
+      const title = c.term || 'No semester',
+        id = c.term ? `term:${c.term}` : 'unassigned';
+      if (!semesters.has(id)) semesters.set(id, { id, title, courseIDs: [], isCurrent: false });
+      semesters.get(id).courseIDs.push(c.id);
+    }
+    const page = Math.max(1, Math.min(nav.page || 1, doc?.pageCount || 1));
+    return {
+      hosted: true,
+      account: { email: account.email },
+      capabilities: { practiceReview: false },
+      library: {
+        ...account.library,
+        ...nav,
+        courses: account.library.courses.map((c) => ({
+          ...c,
+          threads: c.threads.map((t) => ({ id: t.id, title: t.title, documentID: t.documentID })),
+        })),
+      },
+      showingLibrary: nav.showingCourseLibrary !== false,
+      selectedSemesterID: nav.selectedSemesterID || 'all',
+      semesters: [...semesters.values()].sort((a, b) => b.title.localeCompare(a.title)),
+      materialGroups: inventory.groups,
+      materialFiles: inventory.files,
+      messages: thread?.messages || [],
+      sources: thread?.sources || {},
+      page,
+      pageText: index?.pages[page - 1]?.text || '',
+      draft: thread?.draft || '',
+      draftImage: thread?.draftImage || null,
+      mode: nav.mode || 'Explain',
+      editing: nav.editing || null,
+      models: hostedProviders.flatMap((p) =>
+        p.models.map((m) => ({
+          id: typeof m === 'string' ? m : m.id,
+          label: typeof m === 'string' ? m : m.label,
+          providerID: p.id,
+          provider: p.name,
+        }))
+      ),
+      providerID: provider.id,
+      modelID: account.settings.modelID || provider.defaultModel,
+      canSend: !!course && !account.streaming && !!(thread?.draft?.trim() || thread?.draftImage),
+      streaming: account.streaming,
+      busy: account.busy,
+      loadingDocument: false,
+      status: account.status,
+      warnings: account.library.courses.flatMap((c) => c.catalogWarnings || []),
+      error: account.error,
+      context: doc
+        ? `Page ${page} · ${doc.pageCount} pages indexed`
+        : 'Your private course materials',
+      includeCourse: nav.includeCourse !== false,
+      assignmentText,
+      assignmentPDFs: (course?.canvasMaterials || []).filter(
+        (r) =>
+          r.kind === 'files' &&
+          /\.pdf$/i.test(r.fileName || '') &&
+          assignment?.assignment?.linkedFileIDs?.includes(r.remoteID)
+      ),
+      assignmentNotice: nav.assignmentNotice || null,
+      draftOwner: this.owner(account, nav),
+      learningRevision: 0,
+      reviewDue: 0,
+    };
+  }
+  canvas(account, signal) {
+    const origin = account.library.canvasOrigin,
+      credential = this.store.credential(account.id, `canvas:${origin}`);
+    if (!credential) fail('Connect Canvas with your personal access token first.');
+    return new Canvas(origin, credential, {
+      hosts: this.options.canvasHosts,
+      request: this.options.remoteRequest,
+      signal,
+    });
+  }
+  job(account, label, work, streaming = false) {
+    this.assertAvailable(account);
+    account[streaming ? 'streaming' : 'busy'] = true;
+    account.status = label;
+    account.error = null;
+    const controller = new AbortController();
+    account.controller = controller;
+    const job = Promise.resolve()
+      .then(() => work(controller.signal))
+      .catch((error) => {
+        account.error = error.name === 'AbortError' ? null : error.message;
+        account.status =
+          error.name === 'AbortError' ? 'Stopped. Completed work is saved.' : error.message;
+      })
+      .finally(() => {
+        account.busy = false;
+        account.streaming = false;
+        account.controller = null;
+        this.store.save(account);
+        account.job = null;
+      });
+    account.job = job;
+  }
+  async importFile(account, course, name, data) {
+    if (account.library.courses.reduce((sum, c) => sum + c.documents.length, 0) >= 2000)
+      fail('This account has reached its document limit.');
+    const used =
+      account.settings.storageBytes ||
+      account.library.courses
+        .flatMap((c) => c.documents)
+        .reduce((sum, d) => sum + (d.byteCount || 0), 0);
+    if (used + data.length > (this.options.quotaBytes || 2_000_000_000))
+      fail('This account has reached its file storage limit.');
+    const document = await this.documents.import(account.id, name, data);
+    document.byteCount = data.length;
+    account.settings.storageBytes = used + data.length;
+    course.documents.push(document);
+    return document;
+  }
+  async fetchMaterial(account, course, ref, canvas) {
+    if (
+      course.canvasOrigin !== canvas.origin ||
+      course.canvasUserID !== account.library.canvasUserID
+    )
+      fail('Reconnect the Canvas account that owns this workspace.');
+    const existing = course.documents.find((d) => d.sourceKey === ref.id);
+    if (existing && existing.sourceVersion === ref.version) return existing;
+    const item = await canvas.material(ref, course);
+    Object.assign(ref, item.reference);
+    const doc = await this.importFile(
+      account,
+      course,
+      item.name,
+      item.data.length ? item.data : Buffer.from('No instructions provided.')
+    );
+    if (existing?.locallyEditedAt) {
+      existing.sourceKey = null;
+      existing.title += ' (local edits)';
+    }
+    Object.assign(doc, {
+      title: ref.title,
+      sourceKey: ref.id,
+      sourceURL: ref.sourceURL,
+      sourceVersion: ref.version,
+    });
+    if (existing && !existing.locallyEditedAt)
+      course.documents = course.documents.filter((d) => d.id !== existing.id);
+    return doc;
+  }
+  selectCourse(account, nav, id) {
+    const course =
+      account.library.courses.find((c) => c.id === id) || fail('Workspace not found.', 404);
+    Object.assign(nav, {
+      selectedCourseID: id,
+      selectedDocumentID: null,
+      selectedAssignmentID: null,
+      selectedThreadID: course.threads.findLast((t) => !t.documentID)?.id || null,
+      showingCourseLibrary: false,
+      page: 1,
+      selection: '',
+      assignmentNotice: null,
+    });
+    return course;
+  }
+  selectDocument(course, nav, id, keepAssignment = false) {
+    const doc =
+      course?.documents.find((d) => d.id === id) ||
+      fail('Document not found in this workspace.', 404);
+    Object.assign(nav, {
+      selectedDocumentID: id,
+      selectedAssignmentID: keepAssignment ? nav.selectedAssignmentID : null,
+      showingCourseLibrary: false,
+      selectedThreadID: course.threads.findLast((t) => t.documentID === id)?.id || null,
+      page: doc.lastPage || 1,
+      selection: '',
+    });
+    doc.lastOpenedAt = now();
+    return doc;
+  }
+  async action(session, command) {
+    return this.serial(session.user_id, async () => {
+      this.store.refreshNavigation(session);
+      const account = this.account(session.user_id),
+        nav = session.navigation;
+      if (['connect', 'index', 'downloadAll', 'import', 'saveDocument'].includes(command?.action))
+        this.assertAvailable(account);
+      if (!command || typeof command !== 'object' || Array.isArray(command))
+        fail('Invalid action.');
+      let course = this.course(account, nav);
+      if (['draft', 'send', 'page'].includes(command.action))
+        this.validateOwner(account, nav, command.owner);
+      switch (command.action) {
+        case 'create': {
+          if (!String(command.name || '').trim()) fail('Enter a workspace name.');
+          if (account.library.courses.length >= 500)
+            fail('This account has reached its workspace limit.');
+          const created = newCourse(
+            String(command.name).trim().slice(0, 180),
+            String(command.code || '').slice(0, 40)
+          );
+          account.library.courses.push(created);
+          this.selectCourse(account, nav, created.id);
+          break;
+        }
+        case 'library':
+          nav.showingCourseLibrary = true;
+          nav.selectedAssignmentID = null;
+          break;
+        case 'libraryView':
+          nav.courseLibraryView = command.id === 'favorites' ? 'favorites' : 'all';
+          break;
+        case 'semester':
+          nav.selectedSemesterID = String(command.id || 'all');
+          break;
+        case 'course':
+          this.selectCourse(account, nav, command.id);
+          break;
+        case 'favorite': {
+          const c =
+            account.library.courses.find((c) => c.id === command.id) ||
+            fail('Workspace not found.', 404);
+          c.favorite = !c.favorite;
+          break;
+        }
+        case 'materials':
+          this.selectCourse(account, nav, nav.selectedCourseID);
+          break;
+        case 'document':
+          this.selectDocument(course, nav, command.id);
+          break;
+        case 'resume': {
+          const c =
+            account.library.courses.find((c) => c.documents.some((d) => d.id === command.id)) ||
+            fail('Document not found.', 404);
+          this.selectCourse(account, nav, c.id);
+          this.selectDocument(c, nav, command.id);
+          break;
+        }
+        case 'page': {
+          const doc =
+            course?.documents.find((d) => d.id === nav.selectedDocumentID) ||
+            fail('Open a document first.');
+          nav.page = Math.max(1, Math.min(doc.pageCount, Math.floor(Number(command.page) || 1)));
+          doc.lastPage = nav.page;
+          doc.lastOpenedAt = now();
+          nav.selection = '';
+          break;
+        }
+        case 'source':
+          this.selectDocument(course, nav, command.id);
+          nav.page = Math.max(1, Number(command.page) || 1);
+          break;
+        case 'thread': {
+          const thread =
+            course?.threads.find((t) => t.id === command.id) ||
+            fail('Conversation not found.', 404);
+          nav.selectedThreadID = thread.id;
+          nav.selectedDocumentID = thread.documentID;
+          nav.selectedAssignmentID = null;
+          break;
+        }
+        case 'newThread':
+          nav.selectedThreadID = null;
+          this.thread(course, nav, true);
+          break;
+        case 'context':
+          nav.includeCourse = !!command.enabled;
+          break;
+        case 'model': {
+          const provider =
+            hostedProviders.find((p) => p.id === command.providerID) ||
+            fail('Provider unavailable.');
+          if (!provider.models.some((m) => (typeof m === 'string' ? m : m.id) === command.id))
+            fail('Unknown model.');
+          account.settings.providerID = provider.id;
+          account.settings.modelID = command.id;
+          break;
+        }
+        case 'credentials': {
+          const provider =
+            hostedProviders.find((p) => p.id === command.providerID) ||
+            fail('Provider unavailable.');
+          if (typeof command.key !== 'string' || command.key.length > 4096)
+            fail('Invalid API key.');
+          this.store.credential(account.id, `provider:${provider.id}`, command.key.trim());
+          account.settings.providerID = provider.id;
+          account.settings.modelID = provider.defaultModel;
+          account.status = `${provider.name} settings saved.`;
+          break;
+        }
+        case 'clearError':
+          account.error = null;
+          break;
+        case 'stop':
+        case 'cancelSync':
+          account.controller?.abort();
+          break;
+        case 'import': {
+          if (!course || typeof command.data !== 'string')
+            fail('Open a workspace before importing.');
+          const data = Buffer.from(command.data, 'base64');
+          this.job(account, 'Importing document…', async () => {
+            await this.importFile(account, course, command.name, data);
+            account.status = 'Document saved to your workspace.';
+          });
+          break;
+        }
+        case 'connect':
+        case 'index':
+        case 'downloadAll': {
+          if (command.action === 'connect') {
+            if (
+              typeof command.token !== 'string' ||
+              !command.token.trim() ||
+              command.token.length > 4096
+            )
+              fail('Enter a valid Canvas access token.');
+            const candidate = new Canvas(command.origin, command.token.trim(), {
+              hosts: this.options.canvasHosts,
+              request: this.options.remoteRequest,
+            });
+            const user = await candidate.account();
+            this.store.credential(account.id, `canvas:${candidate.origin}`, command.token.trim());
+            account.library.canvasOrigin = candidate.origin;
+            account.library.canvasUserID = user.id;
+            account.library.canvasUserName = user.name;
+          }
+          const requested = command.id;
+          this.job(account, 'Checking Canvas…', async (signal) => {
+            const canvas = this.canvas(account, signal),
+              user = await canvas.account();
+            for (const remote of await canvas.courses()) {
+              if (remote.access_restricted_by_date) continue;
+              let c = account.library.courses.find(
+                (c) =>
+                  c.canvasID === remote.id &&
+                  c.canvasOrigin === canvas.origin &&
+                  c.canvasUserID === user.id
+              );
+              if (!c) {
+                if (account.library.courses.length >= 500)
+                  fail('This account has reached its workspace limit.');
+                c = newCourse(remote.name || `Course ${remote.id}`, remote.course_code || '');
+                account.library.courses.push(c);
+              }
+              Object.assign(c, {
+                canvasID: remote.id,
+                canvasOrigin: canvas.origin,
+                canvasUserID: user.id,
+                term: remote.term?.name,
+              });
+              if (requested && requested !== c.id) continue;
+              signal.throwIfAborted();
+              account.status = `Checking ${c.code || c.name}…`;
+              const catalog = await canvas.catalog(c);
+              c.canvasMaterials = catalog.items;
+              c.catalogWarnings = catalog.warnings;
+              c.catalogChanges = catalog.changes;
+              c.catalogUpdatedAt = now();
+              if (command.action === 'downloadAll' || command.enabled)
+                for (const ref of c.canvasMaterials) {
+                  signal.throwIfAborted();
+                  if (!ref.assignment?.locked && (ref.byteCount || 0) <= 100_000_000) {
+                    try {
+                      await this.fetchMaterial(account, c, ref, canvas);
+                    } catch (error) {
+                      signal.throwIfAborted();
+                      c.catalogWarnings.push(`${ref.title}: ${error.message}`);
+                    }
+                  }
+                }
+              this.store.save(account);
+            }
+            account.library.canvasCheckedAt = now();
+            account.status = 'Canvas is up to date.';
+          });
+          break;
+        }
+        case 'material': {
+          const ref =
+            course?.canvasMaterials.find((r) => r.id === command.id) ||
+            fail('Material not found.', 404);
+          const cached = course.documents.find(
+            (d) => d.sourceKey === ref.id && d.sourceVersion === ref.version
+          );
+          if (!cached) this.assertAvailable(account);
+          const doc =
+            cached || (await this.fetchMaterial(account, course, ref, this.canvas(account)));
+          this.selectDocument(course, nav, doc.id);
+          break;
+        }
+        case 'assignmentVisibility': {
+          const c =
+            account.library.courses.find((c) => c.id === command.courseID) ||
+            fail('Workspace not found.', 404);
+          if (!c.canvasMaterials.some((m) => m.id === command.id && m.kind === 'assignments'))
+            fail('Assignment not found.', 404);
+          const hidden = new Set(c.hiddenAssignmentIDs || []);
+          if (command.enabled) hidden.add(command.id);
+          else hidden.delete(command.id);
+          c.hiddenAssignmentIDs = [...hidden];
+          break;
+        }
+        case 'assignment':
+        case 'assignmentPDF': {
+          course =
+            account.library.courses.find((c) => c.id === command.courseID) ||
+            fail('Workspace not found.', 404);
+          const ref =
+            course.canvasMaterials.find(
+              (r) => r.kind === 'assignments' && r.id === (command.assignmentID || command.id)
+            ) || fail('Assignment not found.', 404);
+          this.selectCourse(account, nav, course.id);
+          nav.selectedAssignmentID = ref.id;
+          if (ref.assignment?.locked) {
+            nav.assignmentNotice = 'Locked in Canvas.';
+            break;
+          }
+          try {
+            const cached = course.documents.find(
+              (d) => d.sourceKey === ref.id && d.sourceVersion === ref.version
+            );
+            let canvas;
+            const connected = () => {
+              this.assertAvailable(account);
+              return (canvas ||= this.canvas(account));
+            };
+            if (!cached) await this.fetchMaterial(account, course, ref, connected());
+            for (const id of (ref.assignment?.linkedFileIDs || []).slice(0, 50))
+              if (!course.canvasMaterials.some((r) => r.id === `files:${id}`)) {
+                const item = (
+                  await connected().api(`/api/v1/courses/${course.canvasID}/files/${id}`)
+                ).value;
+                course.canvasMaterials.push(connected().reference('files', item, course.canvasID));
+              }
+            const pdfs = course.canvasMaterials.filter(
+              (r) =>
+                r.kind === 'files' &&
+                ref.assignment?.linkedFileIDs?.includes(r.remoteID) &&
+                /\.pdf$/i.test(r.fileName || '')
+            );
+            const pdf =
+              command.action === 'assignmentPDF'
+                ? pdfs.find((p) => p.id === command.id) ||
+                  fail('PDF not linked to this assignment.')
+                : pdfs[0];
+            if (pdf) {
+              const doc =
+                course.documents.find(
+                  (d) => d.sourceKey === pdf.id && d.sourceVersion === pdf.version
+                ) || (await this.fetchMaterial(account, course, pdf, connected()));
+              this.selectDocument(course, nav, doc.id, true);
+            }
+          } catch (error) {
+            nav.assignmentNotice = error.message;
+          }
+          break;
+        }
+        case 'edit': {
+          const thread = this.thread(course, nav),
+            index =
+              thread?.messages.findIndex((m) => m.id === command.id && m.role === 'user') ?? -1;
+          if (index < 0 || account.streaming) fail('Message cannot be edited.');
+          nav.editing = command.id;
+          thread.draft = thread.messages[index].content;
+          break;
+        }
+        case 'cancelEdit':
+          nav.editing = null;
+          break;
+        case 'draft':
+        case 'send': {
+          if (!course) fail('Open a workspace first.');
+          const thread = this.thread(course, nav, true);
+          thread.draft = String(command.text || '').slice(0, 200000);
+          nav.selection = String(command.selection || '').slice(0, 16000);
+          if (['Explain', 'Guide me', 'Practice'].includes(command.mode)) nav.mode = command.mode;
+          if (command.image) {
+            if (command.image.length > 14_000_000 || !/^[A-Za-z0-9+/=\s]+$/.test(command.image))
+              fail('Invalid question image.');
+            thread.draftImage = command.image;
+          } else if (command.clearImage) thread.draftImage = null;
+          if (command.action === 'send') {
+            if (!thread.draft.trim() && !thread.draftImage) fail('Enter a question.');
+            this.assertAvailable(account);
+            if (thread.messages.length >= 400) fail('Start a new conversation to continue.');
+            const provider =
+              hostedProviders.find((p) => p.id === account.settings.providerID) ||
+              hostedProviders[0];
+            const model = account.settings.modelID || provider.defaultModel;
+            const key = this.store.credential(account.id, `provider:${provider.id}`);
+            if (!key && !this.options.complete)
+              fail('Add your provider API key in Account settings.');
+            if (nav.editing) {
+              const at = thread.messages.findIndex((m) => m.id === nav.editing);
+              if (at < 0) fail('Edited message no longer exists.');
+              thread.messages.splice(at);
+              nav.editing = null;
+            }
+            const question = thread.draft,
+              image = thread.draftImage,
+              selection = nav.selection,
+              page = nav.page || 1,
+              doc = course.documents.find((d) => d.id === nav.selectedDocumentID);
+            thread.messages.push({
+              id: randomUUID(),
+              role: 'user',
+              content: question,
+              imageData: image,
+              createdAt: now(),
+            });
+            if (thread.messages.length === 1)
+              thread.title = question.slice(0, 60) || 'Image question';
+            thread.draft = '';
+            thread.draftImage = null;
+            const reply = {
+              id: randomUUID(),
+              role: 'assistant',
+              content: '',
+              isStreaming: true,
+              createdAt: now(),
+            };
+            thread.messages.push(reply);
+            this.job(
+              account,
+              'Thinking…',
+              async (signal) => {
+                try {
+                  const refs = doc ? [{ doc, page }] : [];
+                  if (nav.includeCourse !== false)
+                    for (const d of course.documents.filter((d) => d.id !== doc?.id).slice(0, 20))
+                      refs.push({ doc: d, page: 1 });
+                  let context = '',
+                    sources = [];
+                  for (const ref of refs) {
+                    const index = await this.documents.index(account.id, ref.doc),
+                      text = index.pages.find((p) => p.number === ref.page)?.text || '';
+                    if (context.length >= 45000) break;
+                    context += `\n[${ref.doc.title}, page ${ref.page}]\n${text.slice(0, 12000)}\n`;
+                    sources.push({ documentID: ref.doc.id, title: ref.doc.title, page: ref.page });
+                  }
+                  thread.sources[reply.id] = sources;
+                  const payload = {
+                    provider: provider.id,
+                    model,
+                    kind: image ? 'image' : 'text',
+                    selection,
+                    context,
+                    pageTitle: doc?.title || course.name,
+                    learningMode: nav.mode,
+                    messages: thread.messages
+                      .filter((m) => m !== reply)
+                      .map((m) => ({
+                        role: m.role,
+                        content: m.content,
+                        ...(m.imageData
+                          ? { imageDataUrl: `data:image/jpeg;base64,${m.imageData}` }
+                          : {}),
+                      })),
+                  };
+                  const result = await (this.options.complete || runCompletion)(
+                    payload,
+                    { provider: provider.id, apiKeys: { [provider.id]: key } },
+                    (text) => {
+                      reply.content += text;
+                    },
+                    signal
+                  );
+                  reply.content = result.text || reply.content;
+                  account.status = 'Answer saved.';
+                } finally {
+                  reply.isStreaming = false;
+                }
+              },
+              true
+            );
+          }
+          break;
+        }
+        case 'saveDocument':
+          await this.saveEdit(account, course, command.edit, nav);
+          break;
+        default:
+          fail('This action is unavailable on the hosted service.');
+      }
+      this.store.save(account);
+      this.store.navigate(session);
+      return this.state(session);
+    });
+  }
+  async edit(account, id) {
+    const doc = this.doc(account, id),
+      data = await this.documents.data(account.id, doc),
+      revision = hash(data);
+    if (!['text', 'code', 'notebook'].includes(doc.kind)) fail('This file cannot be edited.');
+    if (doc.kind === 'notebook')
+      return {
+        documentID: id,
+        revision,
+        cells: JSON.parse(data).cells.map((c, i) => ({
+          id: i,
+          kind: c.cell_type,
+          source: Array.isArray(c.source) ? c.source.join('') : c.source || '',
+        })),
+      };
+    return { documentID: id, revision, source: data.toString('utf8') };
+  }
+  async saveEdit(account, course, draft, nav) {
+    const doc =
+      course?.documents.find((d) => d.id === draft?.documentID) || fail('Document not found.', 404);
+    const original = await this.documents.data(account.id, doc);
+    if (hash(original) !== draft.revision)
+      fail('The document changed. Copy your edits before reloading.', 409);
+    let data;
+    if (doc.kind === 'notebook') {
+      const notebook = JSON.parse(original);
+      if (
+        draft.cells?.length !== notebook.cells.length ||
+        draft.cells.some((c, i) => c.id !== i || typeof c.source !== 'string')
+      )
+        fail('Notebook cells changed.');
+      draft.cells.forEach((c, i) => {
+        notebook.cells[i].source = c.source;
+      });
+      data = Buffer.from(JSON.stringify(notebook));
+    } else if (['text', 'code'].includes(doc.kind) && typeof draft.source === 'string')
+      data = Buffer.from(draft.source);
+    else fail('Unsupported edit.');
+    if (
+      (account.settings.storageBytes || 0) + data.length >
+      (this.options.quotaBytes || 2_000_000_000)
+    )
+      fail('This account has reached its file storage limit.');
+    const changed = await this.documents.import(account.id, doc.fileName, data, {
+      allowEmpty: true,
+    });
+    // Keep document identity stable; atomically switch its storage pointer after indexing.
+    // Previous originals remain on disk as revisions and count toward the account quota.
+    Object.assign(doc, {
+      ...changed,
+      id: doc.id,
+      storageID: changed.id,
+      title: doc.title,
+      sourceKey: doc.sourceKey,
+      sourceURL: doc.sourceURL,
+      sourceVersion: doc.sourceVersion,
+      locallyEditedAt: now(),
+      byteCount: data.length,
+    });
+    account.settings.storageBytes = (account.settings.storageBytes || 0) + data.length;
+  }
+  async stop() {
+    this.stopping = true;
+    for (const account of this.accounts.values()) account.controller?.abort();
+    await Promise.allSettled([...this.queues.values()]);
+    for (const account of this.accounts.values()) account.controller?.abort();
+    await Promise.allSettled([...this.accounts.values()].map((account) => account.job));
+  }
+}
