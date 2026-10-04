@@ -1,4 +1,5 @@
 import { normalizeFileAttachments } from '../../../packages/core/src/file-attachments.js';
+import { FULL_CONTEXT_CHARS } from './context-mode.js';
 export const CHAT_HISTORY_KEY = 'scholia.chat-history.v1';
 
 export const MAX_SAVED_CHATS = 24;
@@ -6,7 +7,7 @@ const MAX_HISTORY_BYTES = 5_500_000;
 const MAX_CHAT_BYTES = 1_350_000;
 const MAX_MESSAGES = 40;
 const MAX_MESSAGE_CHARS = 24_000;
-const MAX_CONTEXT_CHARS = 32_000;
+const MAX_CONTEXT_CHARS = FULL_CONTEXT_CHARS;
 const MAX_SELECTION_CHARS = 12_000;
 const MAX_IMAGE_DATA_URL_CHARS = 900_000;
 
@@ -61,6 +62,12 @@ function normalizedMessages(raw) {
           ? { reasoning: text(entry.reasoning, MAX_MESSAGE_CHARS) }
           : {}),
         ...(entry.meta ? { meta: text(entry.meta, 300) } : {}),
+        ...(entry.role === 'assistant' && Array.isArray(entry.activity) ? {
+          activity: entry.activity.slice(-80).filter((event) => event?.title).map((event) => ({
+            title: text(event.title, 180), detail: text(event.detail, 2000),
+            timestamp: Number.isFinite(event.timestamp) ? event.timestamp : 0
+          }))
+        } : {}),
         ...(entry.error ? { error: true } : {}),
         ...(attachment ? { attachment } : {}),
         ...(entry.role === 'user' && entry.files?.length ? { files: normalizeFileAttachments(entry.files) } : {}),

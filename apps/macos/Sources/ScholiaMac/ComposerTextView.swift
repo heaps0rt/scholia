@@ -104,15 +104,17 @@ private struct ComposerEditorRepresentable: NSViewRepresentable {
             editor.setSelectedRange(NSRange(location: min(selection.location, length), length: 0))
             context.coordinator.isSynchronizing = false
         }
-        scrollView.wantsEditorFocus = isFocused && isEnabled
+        if scrollView.wantsEditorFocus != (isFocused && isEnabled) {
+            scrollView.wantsEditorFocus = isFocused && isEnabled
+        }
     }
 
     private func configure(_ editor: BoundedComposerTextView) {
-        editor.font = font
-        editor.textColor = .labelColor
-        editor.insertionPointColor = .labelColor
-        editor.isEditable = isEnabled
-        editor.isSelectable = isEnabled
+        if editor.font != font { editor.font = font }
+        if editor.textColor != .labelColor { editor.textColor = .labelColor }
+        if editor.insertionPointColor != .labelColor { editor.insertionPointColor = .labelColor }
+        if editor.isEditable != isEnabled { editor.isEditable = isEnabled }
+        if editor.isSelectable != isEnabled { editor.isSelectable = isEnabled }
         editor.setAccessibilityLabel("Message")
     }
 
@@ -229,7 +231,38 @@ final class BoundedComposerTextView: NSTextView {
     var onPasteAttachment: (() -> Bool)?
     var onPasteImage: ((NSImage) -> Void)?
 
+    override func performKeyEquivalent(with event: NSEvent) -> Bool {
+        if handleEditingShortcut(event) { return true }
+        return super.performKeyEquivalent(with: event)
+    }
+
+    private func handleEditingShortcut(_ event: NSEvent) -> Bool {
+        // A nonactivating Quick Ask panel may be key while another app owns
+        // the menu bar. Route editing commands to this focused editor instead
+        // of relying on that app's Edit menu or a SwiftUI scene's commands.
+        guard window?.firstResponder === self, isSelectable else { return false }
+        let modifiers = event.modifierFlags.intersection([.command, .shift, .option, .control])
+        let key = event.charactersIgnoringModifiers?.lowercased()
+        if modifiers == [.command] {
+            switch key {
+            case "a": selectAll(nil)
+            case "c": copy(nil)
+            case "x" where isEditable: cut(nil)
+            case "v" where isEditable: paste(nil)
+            case "z" where isEditable: undoManager?.undo()
+            default: return false
+            }
+            return true
+        }
+        if modifiers == [.command, .shift], key == "z", isEditable {
+            undoManager?.redo()
+            return true
+        }
+        return false
+    }
+
     override func keyDown(with event: NSEvent) {
+        if handleEditingShortcut(event) { return }
         guard !hasMarkedText() else {
             super.keyDown(with: event)
             return

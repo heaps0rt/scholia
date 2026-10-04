@@ -41,10 +41,12 @@ struct StudyPDFReader: NSViewRepresentable {
     var onSelectionAction: ((String, Bool, String) -> Bool)? = nil
     var selectionBusy = false
     var revision = ""
+    var onOpenLink: ((URL) -> Bool)? = nil
 
     func makeNSView(context: Context) -> StudyPDFHost {
         let host = StudyPDFHost()
         context.coordinator.host = host
+        host.pdf.delegate = context.coordinator
         context.coordinator.observe()
         return host
     }
@@ -84,15 +86,20 @@ struct StudyPDFReader: NSViewRepresentable {
     func makeCoordinator() -> Coordinator { Coordinator(self) }
     static func dismantleNSView(_ host: StudyPDFHost, coordinator: Coordinator) {
         NotificationCenter.default.removeObserver(coordinator)
+        host.pdf.delegate = nil
         coordinator.host = nil
         host.stopObservingEvents()
     }
 
     @MainActor
-    final class Coordinator: NSObject {
+    final class Coordinator: NSObject, @preconcurrency PDFViewDelegate {
         var parent: StudyPDFReader
         weak var host: StudyPDFHost?
         init(_ parent: StudyPDFReader) { self.parent = parent }
+        func pdfViewWillClick(onLink sender: PDFView, with url: URL) {
+            guard StudyHTML.safeURL(url.absoluteString) != nil else { return }
+            if parent.onOpenLink?(url) != true { NSWorkspace.shared.open(url) }
+        }
         func observe() {
             NotificationCenter.default.addObserver(
                 self, selector: #selector(pageChanged), name: .PDFViewPageChanged, object: host?.pdf)
@@ -161,9 +168,9 @@ final class StudyPDFHost: NSView, NSTextFieldDelegate {
         selectionPopup.isHidden = true
         selectionPreview.font = .systemFont(ofSize: 11)
         selectionPreview.textColor = .secondaryLabelColor
-        selectionPreview.maximumNumberOfLines = 2
+        selectionPreview.maximumNumberOfLines = 1
         selectionPreview.lineBreakMode = .byTruncatingTail
-        questionField.placeholderString = "Ask about this…"
+        questionField.placeholderString = "Add a question (optional)"
         questionField.font = .systemFont(ofSize: 12)
         questionField.bezelStyle = .roundedBezel
         questionField.delegate = self
@@ -182,14 +189,15 @@ final class StudyPDFHost: NSView, NSTextFieldDelegate {
         close.isBordered = false
         close.setAccessibilityLabel("Close selection popup")
         let hint = NSTextField(labelWithString: "Selection + document context")
+        hint.stringValue = "Passage + context"
         hint.font = .systemFont(ofSize: 9)
         hint.textColor = .secondaryLabelColor
-        selectionPreview.frame = NSRect(x: 12, y: 78, width: 303, height: 32)
-        questionField.frame = NSRect(x: 12, y: 40, width: 244, height: 27)
-        explainButton.frame = NSRect(x: 262, y: 39, width: 77, height: 28)
-        hint.frame = NSRect(x: 12, y: 15, width: 185, height: 14)
-        ask.frame = NSRect(x: 233, y: 10, width: 105, height: 23)
-        close.frame = NSRect(x: 321, y: 88, width: 20, height: 23)
+        selectionPreview.frame = NSRect(x: 10, y: 65, width: 274, height: 17)
+        questionField.frame = NSRect(x: 10, y: 32, width: 220, height: 27)
+        explainButton.frame = NSRect(x: 236, y: 31, width: 76, height: 28)
+        hint.frame = NSRect(x: 10, y: 9, width: 170, height: 14)
+        ask.frame = NSRect(x: 205, y: 5, width: 105, height: 23)
+        close.frame = NSRect(x: 289, y: 63, width: 22, height: 23)
         for view in [selectionPreview, questionField, explainButton, hint, ask, close] {
             selectionPopup.addSubview(view)
         }
@@ -268,7 +276,10 @@ final class StudyPDFHost: NSView, NSTextFieldDelegate {
     func showSelectionPopup() {
         // Keep the captured passage while the popup's field editor owns focus.
         if !selectionPopup.isHidden, questionField.currentEditor() != nil { return }
-        guard crop.isHidden, NSEvent.pressedMouseButtons == 0,
+        // Layout also runs while an NSButton is tracking a click. Hiding its
+        // parent at that point cancels the click before its action can fire.
+        guard NSEvent.pressedMouseButtons == 0 else { return }
+        guard crop.isHidden,
             let selection = pdf.currentSelection, let text = selection.string,
             !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
             let page = selection.pages.last
@@ -285,15 +296,16 @@ final class StudyPDFHost: NSView, NSTextFieldDelegate {
         let selectedPage = pdf.document.map { $0.index(for: page) + 1 }
         if captured != popupText || selectedPage != selectionPage {
             questionField.stringValue = ""
-            questionField.placeholderString = "Ask about this…"
+            questionField.placeholderString = "Add a question (optional)"
             explainButton.title = "Explain"
         }
         popupText = captured
         selectionPage = selectedPage
         selectionPreview.stringValue = String(text.prefix(240))
-        let y = rect.minY > 130 ? rect.minY - 128 : min(bounds.height - 128, rect.maxY + 5)
+        selectionPreview.toolTip = String(text.prefix(1000))
+        let y = rect.minY > 100 ? rect.minY - 98 : min(bounds.height - 98, rect.maxY + 5)
         selectionPopup.frame = NSRect(
-            x: max(6, min(bounds.width - 356, rect.midX - 175)), y: max(6, y), width: 350, height: 122)
+            x: max(6, min(bounds.width - 326, rect.midX - 160)), y: max(6, y), width: 320, height: 92)
         selectionPopup.isHidden = false
     }
     @objc private func explainSelection() { useSelection(explain: true) }
@@ -301,9 +313,12 @@ final class StudyPDFHost: NSView, NSTextFieldDelegate {
     private func useSelection(explain: Bool) {
         guard !popupText.isEmpty, !explain || !selectionBusy else { return }
         popupWork?.cancel()
-        let sent = onSelectionAction?(popupText, explain, questionField.stringValue) ?? false
+        let question = questionField.stringValue
+        // Release the field editor before chat takes focus, not after it.
+        if !explain { closeSelection() }
+        let sent = onSelectionAction?(popupText, explain, question) ?? false
         if !explain {
-            closeSelection()
+            selectionPopup.isHidden = sent
         } else if sent {
             questionField.stringValue = ""
             questionField.placeholderString = "Ask a follow-up…"

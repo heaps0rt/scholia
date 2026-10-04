@@ -12,6 +12,7 @@ import http from 'node:http';
 import os from 'node:os';
 import { buildCodexExecArguments } from './lib/codex-cli-arguments.mjs';
 import { materializeCodexImages } from './lib/codex-images.mjs';
+import { createCodexModelCatalog } from './lib/codex-model-catalog.mjs';
 
 const MODELS = [
   'gpt-5.5',
@@ -27,7 +28,7 @@ const MODELS = [
 const EFFORTS = ['minimal', 'low', 'medium', 'high', 'xhigh', 'max', 'ultra'];
 const MAX_BODY_BYTES = 10 * 1024 * 1024;
 const USAGE_TTL_MS = 45_000;
-const BRIDGE_VERSION = '0.6.0';
+const BRIDGE_VERSION = '0.7.0';
 const MAX_REASONING_CHARACTERS = 24_000;
 const LOCAL_ORIGIN = /^https?:\/\/(?:localhost|127\.0\.0\.1)(?::\d+)?$/i;
 const EXTENSION_ORIGIN = /^chrome-extension:\/\/[a-p]{32}$/i;
@@ -74,6 +75,7 @@ function parseArguments(argv) {
 }
 
 const options = parseArguments(process.argv.slice(2));
+const modelCatalog = createCodexModelCatalog({ codex: options.codex, fallback: MODELS });
 const allowedOrigins = new Set([
   'https://folk.ntnu.no',
   'https://heaps0rt.github.io',
@@ -123,7 +125,7 @@ function messageText(content) {
 
 function buildPrompt(messages, { webSearch = false } = {}) {
   const transcript = messages
-    .filter((message) => message && ['system', 'user', 'assistant'].includes(message.role))
+    .filter((message) => message && ['user', 'assistant'].includes(message.role))
     .map((message) => {
       const role = message.role === 'assistant' ? 'Assistant' : message.role === 'system' ? 'System' : 'User';
       return `${role}: ${messageText(message.content)}`;
@@ -132,7 +134,7 @@ function buildPrompt(messages, { webSearch = false } = {}) {
   const boundary = webSearch
     ? 'Web search is enabled for this request. Use it when it helps answer the question and preserve source links. Do not inspect files, run commands, use other tools, or modify the workspace.'
     : 'Do not inspect files, run commands, use tools, or modify the workspace.';
-  return `${transcript}\n\nAnswer the user directly. ${boundary}`;
+  return `${transcript}\n\nFollow the system message's response format, including a Scholia file-operation block if requested. Scholia executes those blocks itself; they do not authorize native CLI tools. ${boundary}`;
 }
 
 function reasoningItemText(item) {
@@ -241,7 +243,9 @@ function completion(request, response, body) {
     sendError(response, 400, 'invalid model', headers);
     return;
   }
-  const effort = EFFORTS.includes(body.reasoning_effort) ? body.reasoning_effort : 'high';
+  const modelReasoning = modelCatalog.peek().find((entry) => entry.id === model)?.reasoning;
+  const supportedEfforts = modelReasoning?.efforts || EFFORTS;
+  const effort = supportedEfforts.includes(body.reasoning_effort) ? body.reasoning_effort : modelReasoning?.default || 'high';
   const webSearch = body.web_search === true;
   let imageFiles;
   try {
@@ -255,6 +259,8 @@ function completion(request, response, body) {
     effort,
     fastMode: body.fast_mode === true || body.fast === true,
     webSearch,
+    systemInstructions: body.messages.filter((message) => message?.role === 'system')
+      .map((message) => messageText(message.content)).join('\n\n'),
     imagePaths: imageFiles.paths
   });
   let child;
@@ -282,6 +288,15 @@ function completion(request, response, body) {
   let turnFailure = '';
   let finalized = false;
   let cleaned = false;
+  const startStream = () => {
+    if (body.stream !== true || response.headersSent) return;
+    response.writeHead(200, { 'Content-Type': 'text/event-stream; charset=utf-8', 'Cache-Control': 'no-cache', ...headers });
+  };
+  const reportActivity = (title, detail = '') => {
+    if (body.stream !== true || finalized || disconnected) return;
+    startStream();
+    response.write(`data: ${JSON.stringify({ scholia_activity: { title, detail: String(detail).slice(0, 2000) } })}\n\n`);
+  };
   const timeout = setTimeout(() => {
     timedOut = true;
     forceKillTimer = stopChild(child);
@@ -307,17 +322,16 @@ function completion(request, response, body) {
       const detail = timedOut
         ? `Codex timed out after ${options.timeout} seconds.`
         : turnFailure || spawnError?.message || usefulError || `Codex exited with status ${code}.`;
-      sendError(response, timedOut ? 504 : 502, `Codex CLI failed: ${detail}`, headers);
+      if (response.headersSent) {
+        response.write(`data: ${JSON.stringify({ error: { message: `Codex CLI failed: ${detail}` } })}\n\n`);
+        response.end('data: [DONE]\n\n');
+      } else sendError(response, timedOut ? 504 : 502, `Codex CLI failed: ${detail}`, headers);
     } else {
       const id = `chatcmpl-${randomUUID()}`;
       const created = Math.floor(Date.now() / 1_000);
       const reasoning = reasoningParts.join('\n\n').slice(0, MAX_REASONING_CHARACTERS);
       if (body.stream === true) {
-        response.writeHead(200, {
-          'Content-Type': 'text/event-stream; charset=utf-8',
-          'Cache-Control': 'no-cache',
-          ...headers
-        });
+        startStream();
         const chunk = {
           id,
           object: 'chat.completion.chunk',
@@ -372,7 +386,11 @@ function completion(request, response, body) {
     try {
       const event = JSON.parse(line);
       const item = event.item || event;
-      if (/web_search/i.test(String(item.type || event.type || item.name || ''))) webSearchUsed = true;
+      if (/web_search/i.test(String(item.type || event.type || item.name || ''))) {
+        webSearchUsed = true;
+        const query = item.query || item.action?.query || (Array.isArray(item.action?.queries) ? item.action.queries.join('\n') : '');
+        reportActivity(event.type === 'item.completed' ? 'Web search complete' : 'Searching the web', query);
+      }
       if (item.type === 'agent_message' && typeof item.text === 'string') answer = item.text;
       if (event.type === 'item.completed' && item.type === 'reasoning') {
         const reasoning = reasoningItemText(item).trim();
@@ -465,7 +483,7 @@ const server = http.createServer((request, response) => {
       service: 'codex-bridge',
       bridgeVersion: BRIDGE_VERSION,
       version: codexVersion,
-      models: MODELS,
+      models: modelCatalog.peek().map((model) => model.id),
       efforts: EFFORTS,
       images: true,
       fastMode: true,
@@ -478,10 +496,11 @@ const server = http.createServer((request, response) => {
     return;
   }
   if (request.method === 'GET' && url.pathname === '/v1/models') {
-    sendJson(response, 200, {
-      object: 'list',
-      data: MODELS.map((id) => ({ id, object: 'model', owned_by: 'codex' }))
-    }, headers);
+    if (!authorizationMatches(request.headers.authorization)) {
+      sendError(response, 401, 'missing or invalid bearer token', headers);
+      return;
+    }
+    modelCatalog.read().then((data) => sendJson(response, 200, { object: 'list', data }, headers));
     return;
   }
   if (request.method === 'POST' && url.pathname === '/v1/chat/completions') {

@@ -114,7 +114,7 @@ struct StoredConversation: Codable, Identifiable, Equatable, Sendable {
                 message.content,
                 maximumUTF16Units: maximumMessageCharacters
             ).trimmingCharacters(in: .whitespacesAndNewlines)
-            guard !content.isEmpty else { return nil }
+            guard !content.isEmpty || message.activity?.isEmpty == false else { return nil }
             let reasoning = message.role == .assistant
                 ? message.reasoning.map {
                     TextInputPolicy.bounded(
@@ -132,7 +132,11 @@ struct StoredConversation: Codable, Identifiable, Equatable, Sendable {
                 attachments: retainedAttachments[message.id],
                 reasoning: reasoning,
                 isStreaming: false,
-                metadata: message.metadata.map { String($0.prefix(300)) }
+                metadata: message.metadata.map { String($0.prefix(300)) },
+                activity: message.activity.map { Array($0.suffix(80)).map {
+                    ConversationActivity(id: $0.id, timestamp: $0.timestamp,
+                        title: String($0.title.prefix(180)), detail: $0.detail.map { String($0.prefix(2_000)) })
+                } }
             )
         }
     }

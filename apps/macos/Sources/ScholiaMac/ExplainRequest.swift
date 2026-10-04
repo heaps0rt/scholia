@@ -123,6 +123,13 @@ struct MessageAttachment: Identifiable, Codable, Equatable, Sendable {
     }
 }
 
+struct ConversationActivity: Identifiable, Codable, Equatable, Sendable {
+    var id = UUID()
+    var timestamp = Date()
+    var title: String
+    var detail: String?
+}
+
 struct ConversationMessage: Identifiable, Codable, Equatable, Sendable {
     enum Role: String, Codable, Sendable {
         case user
@@ -138,6 +145,7 @@ struct ConversationMessage: Identifiable, Codable, Equatable, Sendable {
     var reasoning: String?
     var isStreaming: Bool
     var metadata: String?
+    var activity: [ConversationActivity]?
 
     init(
         id: UUID = UUID(),
@@ -148,7 +156,8 @@ struct ConversationMessage: Identifiable, Codable, Equatable, Sendable {
         attachments: [MessageAttachment]? = nil,
         reasoning: String? = nil,
         isStreaming: Bool = false,
-        metadata: String? = nil
+        metadata: String? = nil,
+        activity: [ConversationActivity]? = nil
     ) {
         self.id = id
         self.role = role
@@ -159,6 +168,14 @@ struct ConversationMessage: Identifiable, Codable, Equatable, Sendable {
         self.reasoning = reasoning
         self.isStreaming = isStreaming
         self.metadata = metadata
+        self.activity = activity
+    }
+
+    mutating func recordActivity(_ title: String, detail: String? = nil) {
+        let title = String(title.prefix(180))
+        let detail = detail.map { String($0.prefix(2_000)) }
+        guard activity?.last?.title != title || activity?.last?.detail != detail else { return }
+        activity = Array(((activity ?? []) + [ConversationActivity(title: title, detail: detail)]).suffix(80))
     }
 }
 

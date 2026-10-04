@@ -32,6 +32,56 @@ export const teachingModes = [
   },
 ];
 
+export const coursePrompts = [
+  {
+    id: 'overview',
+    title: 'Give me a course overview',
+    question:
+      'Give me an overview of this course: its main topics, available materials, and how the topics connect. Distinguish saved content from catalog-only information.',
+  },
+  {
+    id: 'deadlines',
+    title: 'What’s due next?',
+    question:
+      "What's due next in this course? Use the saved submission status; flag dates that need a Canvas refresh.",
+  },
+  {
+    id: 'plan',
+    title: 'Help me plan my studying',
+    question:
+      'Help me make a study plan for this course using the available topics, readings, and deadlines. Suggest an order and ask what you need to know about my goals.',
+  },
+];
+
+export function conversationScope(state) {
+  if (state.contextScope) return state.contextScope;
+  const course = state.library.courses.find(
+    (course) => course.id === state.library.selectedCourseID
+  );
+  const thread = course?.threads.find((thread) => thread.id === state.library.selectedThreadID);
+  if (thread) return thread.assignmentID ? 'assignment' : thread.documentID ? 'document' : 'course';
+  return state.library.selectedAssignmentID
+    ? 'assignment'
+    : state.library.selectedDocumentID
+      ? 'document'
+      : 'course';
+}
+
+export function courseCoverage(course) {
+  if (!course) return '';
+  const saved = new Set(course.documents.map((document) => document.sourceKey));
+  const remote = (course.canvasMaterials || []).filter(
+    (material) => !saved.has(material.id)
+  ).length;
+  const readable = course.documents.filter(
+    (document) =>
+      document.kind !== 'preview' &&
+      !document.indexUnavailable &&
+      (document.unreadablePages || 0) < (document.pageCount || 1)
+  ).length;
+  return `${readable} saved reading${readable === 1 ? '' : 's'} with text${remote ? ` · ${remote} material${remote === 1 ? '' : 's'} with titles only until opened` : ''}.`;
+}
+
 export function studyPrompt(mode, document) {
   const scope = !document
     ? 'the downloaded course materials'
@@ -53,18 +103,22 @@ export function appendStudyPrompt(draft, prompt) {
 }
 
 export function recentReadings(courses, limit = 3) {
-  return courses
-    .flatMap((course) =>
-      course.documents
-        .filter((document) => Number.isFinite(document.lastOpenedAt))
-        .map((document) => ({ course, document }))
-    )
-    .sort(
-      (a, b) =>
-        b.document.lastOpenedAt - a.document.lastOpenedAt ||
-        a.document.id.localeCompare(b.document.id)
-    )
-    .slice(0, Math.max(0, limit));
+  const count = Math.max(0, Math.floor(limit));
+  if (!count) return [];
+  // The dashboard needs only a few readings. Keep that small ordered window
+  // instead of allocating and sorting every saved document on each poll.
+  const recent = [];
+  const compare = (a, b) => b.lastOpenedAt - a.lastOpenedAt || a.id.localeCompare(b.id);
+  for (const course of courses) {
+    for (const document of course.documents) {
+      if (!Number.isFinite(document.lastOpenedAt)) continue;
+      if (recent.length === count && compare(document, recent.at(-1).document) >= 0) continue;
+      const position = recent.findIndex((item) => compare(document, item.document) < 0);
+      recent.splice(position < 0 ? recent.length : position, 0, { course, document });
+      if (recent.length > count) recent.pop();
+    }
+  }
+  return recent;
 }
 
 export function readingPosition(document) {
@@ -121,7 +175,7 @@ export function readerRenderKey(state) {
           ]
         : null,
     ]);
-  const { lastOpenedAt, lastPage, ...content } = document;
+  const { lastOpenedAt, lastPage, classification, materialAnalysis, ...content } = document;
   return studyRenderKey([
     false,
     course.id,
@@ -136,5 +190,5 @@ export function studyPollDelay(state, hidden = false, failed = false) {
   if (hidden) return 15000;
   if (failed) return 6000;
   if (state?.loadingDocument) return 450;
-  return state?.streaming ? 650 : state?.busy ? 1200 : 3500;
+  return state?.streaming ? 650 : (state?.busy || state?.assignmentPreparing) ? 1200 : 3500;
 }

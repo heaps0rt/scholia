@@ -9,19 +9,55 @@ migrate_permissions=0
 launch_after_install=0
 skip_build=0
 check_only=0
+configuration=debug
 
 for argument in "$@"; do
   case "$argument" in
+    --help|-h)
+      cat <<'HELP'
+Install or update Scholia from this source folder.
+
+Usage: npm run update:macos [-- options]
+       npm run install:macos [-- options]
+
+The updater builds the latest local changes, safely replaces
+/Applications/Scholia.app, and reopens it. Chats and settings stay in place.
+You can also double-click Update Scholia.command or choose Update Scholia
+from the installed app's menu.
+
+Options:
+  --launch               Open Scholia after installing (default for update:macos).
+  --skip-build           Install the already-built copy in dist/macos.
+  --check-only           Check signing compatibility without replacing the app.
+  --release              Use the slower, fully optimized distribution build.
+  --migrate-permissions  Reset stale privacy grants if the signing identity changed.
+  --help                 Show this help.
+
+SCHOLIA_INSTALL_PATH overrides /Applications/Scholia.app.
+HELP
+      exit 0 ;;
     --migrate-permissions) migrate_permissions=1 ;;
     --launch) launch_after_install=1 ;;
     --skip-build) skip_build=1 ;;
     --check-only) check_only=1 ;;
+    --release) configuration=release ;;
     *) print -u2 "Unknown option: $argument"; exit 2 ;;
   esac
 done
 
+# A second click must not rebuild or replace the app while an update is active.
+# The OS releases this lock even if Terminal closes unexpectedly.
+installer_lock="${TMPDIR:-/tmp}/scholia-install.lock"
+touch "$installer_lock"
+zmodload zsh/system
+if ! zsystem flock -t 0 -f installer_lock_fd "$installer_lock"; then
+  print -u2 "A Scholia update is already running. Wait for it to finish."
+  exit 1
+fi
+
 if [[ "$skip_build" != "1" ]]; then
-  "$script_dir/build-macos-app.sh"
+  export SCHOLIA_REQUIRE_STABLE_SIGNING=1
+  "$script_dir/build-macos-app.sh" "$configuration"
 fi
 
 if [[ ! -d "$source_app" ]]; then
@@ -37,6 +73,10 @@ if [[ "$signature" == *"Signature=adhoc"* ]]; then
 fi
 
 bundle_id="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$source_app/Contents/Info.plist")"
+if ! codesign --verify -R='anchor apple generic' "$source_app" >/dev/null 2>&1; then
+  print -u2 "This build uses local signing. Keychain may ask for Always Allow again because its per-build fingerprint changes."
+  print -u2 "Accessibility and Screen Recording identity checks below are separate from Keychain approval."
+fi
 identity_changed=0
 if [[ -d "$destination_app" ]]; then
   old_requirement="$(codesign -d -r- "$destination_app" 2>&1 \
@@ -57,17 +97,22 @@ if [[ "$check_only" == "1" ]]; then
   exit 0
 fi
 
-if pgrep -f "$destination_app/Contents/MacOS/Scholia" >/dev/null 2>&1; then
-  osascript -e "tell application id \"$bundle_id\" to quit" >/dev/null 2>&1 || true
-  for _ in {1..50}; do
-    pgrep -f "$destination_app/Contents/MacOS/Scholia" >/dev/null 2>&1 || break
-    sleep 0.1
-  done
-  if pgrep -f "$destination_app/Contents/MacOS/Scholia" >/dev/null 2>&1; then
-    print -u2 "Scholia is still running. Quit it and run the installer again."
-    exit 1
+# A copy launched from dist can keep the old code and shared library open even
+# after /Applications is updated. Quit each exact app path before replacing it.
+for running_app in "$source_app" "$destination_app"; do
+  if pgrep -f "$running_app/Contents/MacOS/Scholia" >/dev/null 2>&1; then
+    osascript -e 'on run argv' -e 'tell application (item 1 of argv) to quit' \
+      -e 'end run' "$running_app" >/dev/null 2>&1 || true
+    for _ in {1..50}; do
+      pgrep -f "$running_app/Contents/MacOS/Scholia" >/dev/null 2>&1 || break
+      sleep 0.1
+    done
+    if pgrep -f "$running_app/Contents/MacOS/Scholia" >/dev/null 2>&1; then
+      print -u2 "Scholia is still running from $running_app. Quit it and run the installer again."
+      exit 1
+    fi
   fi
-fi
+done
 
 destination_parent="${destination_app:h}"
 mkdir -p "$destination_parent"
@@ -119,7 +164,7 @@ if [[ "$identity_changed" == "1" ]]; then
     print -u2 "Run this installer once with --migrate-permissions, then grant access to the new stable identity."
   fi
 else
-  printf 'The new build satisfies the installed app requirement; privacy grants are preserved.\n'
+  printf 'The new build satisfies the installed app requirement; Accessibility and Screen Recording grants are preserved.\n'
 fi
 
 printf 'Installed %s\n' "$destination_app"

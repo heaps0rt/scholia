@@ -28,18 +28,35 @@ There is no public registration form.
 
 ## Configuration
 
-| Variable               | Default                         | Purpose                                                          |
-| ---------------------- | ------------------------------- | ---------------------------------------------------------------- |
-| `SCHOLIA_ORIGIN`       | `http://127.0.0.1:3000`         | Exact public origin, including a nonstandard port if used        |
-| `SCHOLIA_DATA_DIR`     | `.data`                         | Persistent database, original files, indexes, and encryption key |
-| `SCHOLIA_CANVAS_HOSTS` | `canvas.ntnu.no`                | Comma-separated allowed Canvas hostnames                         |
-| `SCHOLIA_SECRET_KEY`   | Generated in the data directory | Optional 64-character hexadecimal encryption key                 |
-| `HOST`                 | `127.0.0.1`                     | Listening interface; container default is `0.0.0.0`              |
-| `PORT`                 | `3000`                          | Listening port                                                   |
+| Variable                | Default                             | Purpose                                                          |
+| ----------------------- | ----------------------------------- | ---------------------------------------------------------------- |
+| `SCHOLIA_ORIGIN`        | `http://127.0.0.1:3000`             | Exact public origin, including a nonstandard port if used        |
+| `SCHOLIA_DATA_DIR`      | `.data`                             | Persistent database, original files, indexes, and encryption key |
+| `SCHOLIA_CANVAS_HOSTS`  | `canvas.ntnu.no`                    | Comma-separated allowed Canvas hostnames                         |
+| `SCHOLIA_SECRET_KEY`    | Generated in the data directory     | Optional 64-character hexadecimal encryption key                 |
+| `SCHOLIA_OCR`           | Enabled when Tesseract is installed | Set to `off` to disable local image/scanned PDF OCR              |
+| `SCHOLIA_OCR_LANGUAGES` | `eng`                               | Installed Tesseract languages, for example `eng+nor`             |
+| `SCHOLIA_TESSERACT`     | `tesseract`                         | Optional absolute path to the local OCR executable               |
+| `HOST`                  | `127.0.0.1`                         | Listening interface; container default is `0.0.0.0`              |
+| `PORT`                  | `3000`                              | Listening port                                                   |
 
 The application does not load `.env` automatically. Export variables with your
 process manager, or use Docker's `--env-file`. `.env.example` is a starting point
 for a container deployment. Keep secrets and data outside version control.
+
+The Docker image includes Tesseract and English/Norwegian language data. For a
+local Node deployment, install Tesseract with your operating system package
+manager to enable OCR. OCR runs on this server without uploading files to a
+provider or downloading models at runtime. Scanned PDFs use up to six sampled
+pages and a 24-second OCR budget; images have a six-second budget. Low-confidence
+words are excluded from classification. Clear handwriting can sometimes be
+recognized, but cursive handwriting and mathematical notation are unreliable;
+see the [Tesseract documentation](https://tesseract-ocr.github.io/tessdoc/tess3/FAQ-Old.html#can-i-use-tesseract-for-handwriting-recognition).
+The document notice reports incomplete or unavailable OCR, and originals remain
+available. Workspace categories and topic headings use extracted text and OCR
+evidence, preserve Canvas modules, and leave ambiguous files under Documents.
+Analysis is saved with each import. Existing saved text is classified in bounded
+batches on workspace visits, and older PDF/image indexes upgrade on opening.
 
 A non-loopback public origin must use HTTPS. Terminate TLS at a reverse proxy
 and forward the original `Host` header exactly. The application validates Host
@@ -157,9 +174,9 @@ until the new deployment has passed sign-in, file reading, and provider checks.
 Hosted web supports workspaces, assignment status and hidden lists, Canvas
 catalogs and on-demand downloads, document imports, text/notebook edits, and
 conversational tutoring. Saved files live on the server; they are not a browser
-offline cache. Native **Practice this**, spaced review, Vision OCR, desktop
-capture, local provider bridges, and the Mac's frequent-course preloading are
-not hosted features.
+offline cache. Hosted accounts also support course practice, review, exam plans, and workspace
+search. Vision OCR, desktop capture, Mac file tools, and local provider bridges
+remain native features; hosted OCR uses Tesseract.
 
 Imports are limited to 100 MB per file. Document indexing uses bounded worker
 threads and timeouts; accounts also have storage and collection limits. Large

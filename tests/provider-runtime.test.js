@@ -96,8 +96,8 @@ test('PDF guided learning mode reaches the provider system instruction', () => {
   }, settings);
   const body = JSON.parse(request.fetchOptions.body);
 
-  assert.match(body.messages[0].content, /Guided learning mode is active/);
-  assert.match(body.messages[0].content, /completed solution when explicitly requested/);
+  assert.match(body.messages[0].content, /Guide me mode:/);
+  assert.match(body.messages[0].content, /never produce a complete submission/);
 });
 
 test('an initial highlight question includes the fetched page context', () => {
@@ -514,10 +514,12 @@ test('OpenAI web-search streaming preserves citations as clickable sources', asy
 
   try {
     const tokens = [];
+    const activity = [];
     const settings = mergeSettings({ apiKeys: { openai: 'secret' } });
     const result = await runCompletion({
       ...basePayload, provider: 'openai', webSearch: true
-    }, settings, (token) => tokens.push(token));
+    }, settings, (token) => tokens.push(token), undefined, () => {}, (event) => activity.push(event));
+    assert.ok(activity.some((event) => event.title === 'Web search complete'));
     assert.equal(requestedUrl, 'https://api.openai.com/v1/responses');
     assert.deepEqual(requestBody.tools, [{ type: 'web_search' }]);
     assert.equal(result.webSearch, true);

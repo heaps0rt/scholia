@@ -23,6 +23,16 @@ await build({
   target: 'safari17',
   minify: true,
 });
+await build({
+  entryPoints: [resolve(root, 'packages/core/src/code-highlight.js')],
+  outfile: resolve(output, 'code-highlight.js'),
+  bundle: true,
+  format: 'iife',
+  globalName: 'ScholiaCodeHighlight',
+  target: 'safari17',
+  minify: true,
+  legalComments: 'eof',
+});
 await Promise.all([
   copyFile(resolve(root, 'apps/web/index.html'), resolve(output, 'index.html')),
   copyFile(resolve(root, 'apps/chrome/assets/icon.svg'), resolve(output, 'icon.svg')),

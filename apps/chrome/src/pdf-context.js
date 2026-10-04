@@ -1,4 +1,5 @@
 import { detectDocumentLanguage } from './document-language.js';
+import { createPdfOcrReader } from './pdf-ocr.js';
 
 export const MAX_PDF_BYTES = 1024 * 1024 * 1024;
 export const PDF_RANGE_CHUNK_BYTES = 1024 * 1024;
@@ -512,6 +513,10 @@ export async function extractPdfContext(input, { onProgress = () => {}, signal, 
   signal?.addEventListener('abort', abort, { once: true });
   try {
     const pdf = await loadingTask.promise;
+    const ocr = createPdfOcrReader({
+      signal, onProgress, totalPages: pdf.numPages,
+      imageOperations: [pdfjs.OPS.paintImageXObject, pdfjs.OPS.paintInlineImageXObject, pdfjs.OPS.paintImageMaskXObject]
+    });
     const pages = [];
     let extractedCharacters = 0;
     const pagesToRead = Math.min(pdf.numPages, MAX_EXTRACTED_PAGES);
@@ -519,7 +524,8 @@ export async function extractPdfContext(input, { onProgress = () => {}, signal, 
       if (signal?.aborted) throw new DOMException('PDF extraction was cancelled.', 'AbortError');
       if (extractedCharacters >= characterLimit) break;
       const page = await pdf.getPage(pageNumber);
-      const text = textContentToString((await page.getTextContent()).items);
+      const nativeText = textContentToString((await page.getTextContent()).items);
+      const text = await ocr.readPage(page, nativeText, pageNumber);
       const room = characterLimit - extractedCharacters;
       pages.push(room > 0 ? text.slice(0, room) : '');
       extractedCharacters += Math.min(text.length, Math.max(0, room));
@@ -536,6 +542,7 @@ export async function extractPdfContext(input, { onProgress = () => {}, signal, 
     const formatted = formatPdfContext(pages, pdf.numPages);
     return {
       ...formatted,
+      ...ocr.summary(),
       title: compactLine(metadata.Title || '').slice(0, 500),
       pageLanguage: await detectDocumentLanguage({
         context: formatted.context,

@@ -11,6 +11,7 @@ final class StudyWebServer {
     private let assets: URL
     private let sendQuestion: (() -> Void)?
     private let practiceProvider: (ProviderConfiguration, StudyCompletion)?
+    private let examRecommendationProvider: (ProviderConfiguration, StudyCompletion)?
     private let token = UUID().uuidString + UUID().uuidString
     private var listener: NWListener?
     private var pendingOpen = false
@@ -18,12 +19,14 @@ final class StudyWebServer {
 
     init(
         app: AppModel, workspace: StudyWorkspaceModel, assets: URL? = nil,
-        practiceProvider: (ProviderConfiguration, StudyCompletion)? = nil, sendQuestion: (() -> Void)? = nil
+        practiceProvider: (ProviderConfiguration, StudyCompletion)? = nil, sendQuestion: (() -> Void)? = nil,
+        examRecommendationProvider: (ProviderConfiguration, StudyCompletion)? = nil
     ) {
         self.app = app
         self.workspace = workspace
         self.sendQuestion = sendQuestion
         self.practiceProvider = practiceProvider
+        self.examRecommendationProvider = examRecommendationProvider
         self.assets = assets ?? Bundle.main.resourceURL!.appendingPathComponent("StudyWeb")
     }
 
@@ -101,10 +104,34 @@ final class StudyWebServer {
                 return .error(403, "Reopen this website from Scholia")
             }
             do {
-                if path == "/api/state", request.method == "GET" { return try state() }
+                if path == "/api/state", request.method == "GET" {
+                    Task { await workspace.refreshMathWikiIfNeeded() }
+                    // Browser-only use must refresh even when the native workspace is closed.
+                    Task {
+                        await workspace.refreshCanvasAssignmentsIfNeeded()
+                        await workspace.refreshCanvasContentIfNeeded()
+                    }
+                    return try state()
+                }
+                if path == "/api/search", request.method == "GET" {
+                    let params = URLComponents(string: request.path)?.queryItems ?? []
+                    func value(_ name: String) -> String { params.first { $0.name == name }?.value ?? "" }
+                    let result = try await workspace.fileSearch.search(courses: workspace.library.courses,
+                        store: workspace.store, query: value("q"), courseID: value("courseID"),
+                        mode: value("mode").isEmpty ? "all" : value("mode"))
+                    return StudyHTTPResponse(data: try JSONEncoder().encode(result))
+                }
                 if path == "/api/learning", request.method == "GET" {
                     return StudyHTTPResponse(
                         data: try JSONEncoder().encode(workspace.learning.view(library: workspace.library)))
+                }
+                if path == "/api/exam-recommendation", request.method == "POST" {
+                    guard request.headers["content-type"]?.hasPrefix("application/json") == true,
+                        request.body.count <= 500_000 else { return .error(400, "Use a bounded JSON request") }
+                    let input = try JSONDecoder().decode(StudyExamRecommendationRequest.self, from: request.body)
+                    let result = try await workspace.recommendExams(input, using: app,
+                        configuration: examRecommendationProvider?.0, complete: examRecommendationProvider?.1)
+                    return StudyHTTPResponse(data: try JSONEncoder().encode(result))
                 }
                 if path.hasPrefix("/api/edit/"), request.method == "GET" {
                     guard let id = UUID(uuidString: String(path.dropFirst("/api/edit/".count))),
@@ -188,6 +215,7 @@ final class StudyWebServer {
     }
 
     private func state() throws -> StudyHTTPResponse {
+        app.refreshModelCatalogs()
         // Do not serialize settings, provider secrets, cookies, tokens, or inactive chat bodies.
         var library = workspace.library
         for ci in library.courses.indices {
@@ -200,32 +228,44 @@ final class StudyWebServer {
             }
         }
         let models = ProviderCatalog.providers.flatMap { provider in
-            app.verifiedModels(for: provider).map {
-                StudyWebModel(id: $0.id, label: $0.label, providerID: provider.id, provider: provider.name)
+            app.verifiedModels(for: provider).map { definition in
+                StudyWebModel(id: definition.id, label: definition.label, providerID: provider.id, provider: provider.name,
+                    reasoningEfforts: definition.reasoningEfforts, defaultReasoningEffort: definition.defaultReasoningEffort,
+                    lastUsedAt: app.settings.recentModels.first { recent in
+                        recent.providerID == provider.id && recent.modelID == definition.id
+                    }?.lastUsedAt.timeIntervalSince1970)
             }
         }
+        let materialGroups = workspace.course.map { StudyMaterialOrganizer.groups(for: $0) } ?? []
         let data = try JSONEncoder().encode(
             StudyWebState(
                 library: library, showingLibrary: workspace.isShowingLibrary,
                 semesters: workspace.semesterGroups, selectedSemesterID: workspace.selectedSemesterID,
-                materialGroups: workspace.course.map { StudyMaterialOrganizer.groups(for: $0) } ?? [],
-                materialFiles: workspace.course.map { StudyMaterialOrganizer.files(for: $0) } ?? [],
+                materialGroups: materialGroups,
+                materialFiles: workspace.course.map { StudyMaterialOrganizer.files(for: $0, groups: materialGroups) } ?? [],
                 messages: workspace.messages, sources: workspace.thread?.sources ?? [:], page: workspace.currentPage,
                 pageText: workspace.currentPageText, draft: workspace.draft, draftImage: workspace.draftImage,
                 mode: workspace.mode.rawValue, editing: workspace.editingMessageID, models: models,
                 providerID: app.activeProvider.id,
                 modelID: app.settings.models[app.activeProvider.id] ?? app.activeProvider.defaultModel,
+                reasoningEffort: app.activeStudyReasoningEffort,
                 canSend: workspace.canSend, streaming: workspace.isStreaming,
+                answerStartedAt: workspace.answerStartedAt?.timeIntervalSince1970,
                 busy: workspace.canvasBusy || workspace.isImporting,
                 loadingDocument: workspace.document != nil && workspace.documentIndex == nil && workspace.error == nil,
                 status: workspace.activity ?? workspace.canvasStatus, warnings: workspace.canvasWarnings,
                 error: workspace.error,
-                context: workspace.contextSummary, includeCourse: workspace.includeCourseContext,
+                context: workspace.contextSummary, contextScope: workspace.conversationScope,
+                includeCourse: workspace.includeCourseContext,
                 assignmentText: workspace.assignmentText, assignmentPDFs: workspace.assignmentPDFs,
                 assignmentFiles: workspace.assignmentFiles, assignmentFileNotices: workspace.assignmentFileNotices,
                 assignmentNotice: workspace.assignmentNotice,
+                assignmentPreparing: workspace.assignmentPreparing, assignmentPreparingFileID: workspace.assignmentPreparingFileID,
                 draftOwner: workspace.draftOwner, learningRevision: workspace.learning.state.sequence,
-                reviewDue: workspace.learning.state.due().count))
+                reviewDue: workspace.learning.state.due().count,
+                canvasConnectionStatus: workspace.canvasConnectionStatus,
+                canvasChecking: workspace.canvasChecking,
+                assignmentRefreshBusy: workspace.assignmentRefreshBusy))
         return StudyHTTPResponse(data: data)
     }
 
@@ -237,16 +277,27 @@ final class StudyWebServer {
             return id
         }
         switch command.action {
+        case "studentweb":
+            workspace.studentwebImportRequested = true
+            workspace.examPlannerPresented = true
+            app.openStudyWorkspace()
+        case "examPlan":
+            guard let exams = command.exams, let base = command.baseExams else {
+                throw StudyError.message("Missing exam plan or original plan. Reopen the planner before saving.")
+            }
+            try workspace.replaceExamPlan(exams, base: base)
         case "practiceGenerate":
             try workspace.validateDraftOwner(command.owner)
             if let text = command.selection { workspace.selectedText = String(text.prefix(16_000)) }
             if let provider = practiceProvider {
                 workspace.preparePractice(
                     count: command.count ?? 3, scope: command.text ?? "", openBook: command.enabled ?? false,
-                    configuration: provider.0, complete: provider.1)
+                    configuration: provider.0, sourceScope: command.sourceScope ?? "reading",
+                    style: command.practiceStyle ?? "concepts", complete: provider.1)
             } else {
                 workspace.startPractice(
-                    using: app, count: command.count ?? 3, scope: command.text ?? "", openBook: command.enabled ?? false
+                    using: app, count: command.count ?? 3, scope: command.text ?? "", openBook: command.enabled ?? false,
+                    sourceScope: command.sourceScope ?? "reading", style: command.practiceStyle ?? "concepts"
                 )
             }
         case "practice":
@@ -259,6 +310,7 @@ final class StudyWebServer {
             else { throw StudyError.message("Open the document's course before saving changes.") }
             try await workspace.saveDocumentEdits(draft)
         case "library": workspace.showCourseLibrary()
+        case "assignments": workspace.showAssignments()
         case "libraryView":
             guard let value = command.id, let mode = StudyCourseLibraryViewMode(rawValue: value) else {
                 throw StudyError.message("Unknown course view")
@@ -275,6 +327,7 @@ final class StudyWebServer {
         case "create": workspace.createCourse(name: command.name ?? "", code: command.code ?? "")
         case "favorite": workspace.toggleFavorite(try uuid(command.id))
         case "materials": workspace.showCourseMaterials()
+        case "askCourse": workspace.askAboutCourse()
         case "document":
             let id = try uuid(command.id)
             guard workspace.course?.documents.contains(where: { $0.id == id }) == true else {
@@ -346,6 +399,11 @@ final class StudyWebServer {
         case "stop": workspace.stopAnswer()
         case "context": workspace.includeCourseContext = command.enabled ?? true
         case "model": app.selectStudyModel(command.id ?? "", providerID: command.providerID ?? "")
+        case "reasoning":
+            guard command.providerID == app.activeProvider.id, command.id == app.activeModel else {
+                throw StudyError.message("The model changed. Select a reasoning mode for the current model.")
+            }
+            try app.selectStudyReasoningEffort(command.text ?? "")
         case "index", "downloadAll":
             if let id = command.id {
                 workspace.syncCanvasCourses(courseIDs: [try uuid(id)], downloadAll: command.action == "downloadAll")
@@ -356,9 +414,14 @@ final class StudyWebServer {
             if let origin = command.origin { workspace.canvasAddress = try CanvasAddress.origin(origin).absoluteString }
             workspace.loadCanvasCourses(token: command.token, downloadAll: command.enabled ?? false)
         case "signIn":
-            app.openStudyWorkspace()
-            workspace.canvasPresented = true
-            workspace.canvasSigningIn = true
+            if let origin = command.origin { workspace.canvasAddress = try CanvasAddress.origin(origin).absoluteString }
+            await workspace.beginCanvasSignIn()
+            if workspace.canvasSigningIn {
+                app.openStudyWorkspace()
+                workspace.canvasPresented = true
+            }
+        case "refreshAssignments":
+            Task { await workspace.refreshCanvasAssignmentsIfNeeded(force: true) }
         case "cancelSync":
             workspace.cancelCanvas()
             workspace.cancelImport()
@@ -399,12 +462,19 @@ private struct StudyWebCommand: Decodable, Sendable {
     var owner: StudyDraftOwner?
     var learning: LearningCommand?
     var count: Int?
+    var sourceScope: String?
+    var practiceStyle: String?
+    var exams: [StudyExam]?
+    var baseExams: [StudyExam]?
 }
 private struct StudyWebModel: Encodable {
     var id: String
     var label: String
     var providerID: String
     var provider: String
+    var reasoningEfforts: [String]
+    var defaultReasoningEffort: String?
+    var lastUsedAt: Double?
 }
 private struct StudyWebState: Encodable {
     var library: StudyLibrary
@@ -424,23 +494,31 @@ private struct StudyWebState: Encodable {
     var models: [StudyWebModel]
     var providerID: String
     var modelID: String
+    var reasoningEffort: String?
     var canSend: Bool
     var streaming: Bool
+    var answerStartedAt: Double?
     var busy: Bool
     var loadingDocument: Bool
     var status: String?
     var warnings: [String]
     var error: String?
     var context: String
+    var contextScope: String
     var includeCourse: Bool
     var assignmentText: String
     var assignmentPDFs: [CanvasMaterialReference]
     var assignmentFiles: [CanvasMaterialReference]
     var assignmentFileNotices: [String: String]
     var assignmentNotice: String?
+    var assignmentPreparing: Bool
+    var assignmentPreparingFileID: String?
     var draftOwner: StudyDraftOwner
     var learningRevision: Int
     var reviewDue: Int
+    var canvasConnectionStatus: String
+    var canvasChecking: Bool
+    var assignmentRefreshBusy: Bool
 }
 
 struct StudyHTTPRequest: Sendable {

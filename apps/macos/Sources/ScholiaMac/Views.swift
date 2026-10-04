@@ -182,6 +182,10 @@ struct MenuContent: View {
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
 
+            Button("Update Scholia…", action: ScholiaAppUpdater.open)
+                .font(.caption)
+                .help("Build and install the latest changes from your Scholia folder, then reopen the app.")
+
             Divider()
             HStack {
                 Button("Open Scholia", action: model.openConversation)
@@ -756,6 +760,7 @@ private struct MessageView: View {
                    !reasoning.isEmpty {
                     ProviderReasoningView(source: reasoning)
                 }
+                if let activity = message.activity { ConversationActivityView(events: activity) }
                 if message.role == .user, let imageData = message.imageData {
                     ConversationMessageImageView(data: imageData)
                 }
@@ -764,18 +769,10 @@ private struct MessageView: View {
                 }
                 if !message.content.isEmpty {
                     if message.role == .assistant {
-                        if message.isStreaming {
-                            Text(message.content)
-                                .font(.body)
-                                .textSelection(.enabled)
-                                .fixedSize(horizontal: false, vertical: true)
-                                .frame(maxWidth: .infinity, alignment: .leading)
-                        } else {
-                            RichMarkdownView(
-                                source: message.content,
-                                registerSelectionView: { selectionRegions.register($0, for: message.id) }
-                            )
-                        }
+                        RichMarkdownView(
+                            source: message.content,
+                            registerSelectionView: { selectionRegions.register($0, for: message.id) }
+                        )
                     } else if isEditing {
                         ConversationMessageEditor(
                             text: $editDraft,
@@ -915,6 +912,7 @@ struct SettingsView: View {
     @State private var apiKey = ""
     @State private var keyStatus: String?
     @State private var pendingSessionDeletion: OpenCodePoisonedAttachment?
+    @State private var modelPickerPresented = false
 
     private var provider: ProviderDefinition { model.activeProvider }
     private var quickAskProvider: ProviderDefinition { model.activeQuickAskProvider }
@@ -925,6 +923,12 @@ struct SettingsView: View {
                 .tabItem { Label("Provider", systemImage: "network") }
             behaviorSettings
                 .tabItem { Label("Behavior", systemImage: "switch.2") }
+            Form {
+                Section("Course content") {
+                    StudyCourseUpdatePreferences(workspace: model.studyWorkspace)
+                }
+            }.formStyle(.grouped)
+                .tabItem { Label("Courses", systemImage: "books.vertical") }
             privacySettings
                 .tabItem { Label("Privacy", systemImage: "lock.shield") }
         }
@@ -1011,27 +1015,21 @@ struct SettingsView: View {
                         .menuStyle(.borderlessButton).scholiaPointingCursor()
                         .help("Models that passed Test provider for this endpoint")
 
-                        Menu {
-                            let candidates = model.unverifiedCandidateModels(for: provider)
-                            if candidates.isEmpty {
-                                Text("No untested catalog models")
-                            } else {
-                                ForEach(candidates) { item in
-                                    Button(modelPickerLabel(item)) {
-                                        model.settings.models[provider.id] = item.id
-                                        model.persistSettings()
-                                    }
-                                }
-                                if candidates.count == 80 {
-                                    Divider()
-                                    Text("Type another model ID above to test it")
-                                }
-                            }
-                        } label: {
-                            Text("Select to test…")
+                        Button("Browse & test…") {
+                            modelPickerPresented = true
                         }
-                        .menuStyle(.borderlessButton).scholiaPointingCursor()
-                        .help("Select a catalog candidate, then run Test provider before it appears in normal model pickers")
+                        .popover(isPresented: $modelPickerPresented) {
+                            ScholiaModelPickerPopover(
+                                isPresented: $modelPickerPresented,
+                                usesExplainModel: true,
+                                providerID: provider.id,
+                                onTestModel: { modelID, _ in
+                                    saveKey(testAfterSaving: true, modelID: modelID)
+                                }
+                            )
+                            .environmentObject(model)
+                        }
+                        .help("Search and test any catalog or custom model")
                     }
                 }
 
@@ -1157,7 +1155,7 @@ struct SettingsView: View {
                 Text("Press ⌘Tab in Quick Chat to cycle the thinking profiles supported by their selected models; use ⇧⌘Tab to go back. Each profile can use the current model with only a reasoning-effort change, or override both model and effort.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
-                Text("Quick Chat profile changes are temporary. Set the saved default here. Model pickers list only models that have passed Test provider for their current endpoint.")
+                Text("Quick Chat profile changes are temporary. Set the saved default here. Use Browse & test to verify models for their current endpoint before selecting them.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
@@ -1179,6 +1177,9 @@ struct SettingsView: View {
                         saveKey(testAfterSaving: true)
                     }
                     .disabled(model.isTestingProvider)
+                    if model.isTestingProvider {
+                        Button("Cancel test") { model.cancelModelTest() }
+                    }
                     if provider.bridge != nil {
                         if model.activeBridgeIsReady {
                             Label("Local provider ready", systemImage: "checkmark.circle.fill")
@@ -1446,6 +1447,35 @@ struct SettingsView: View {
 
     private var privacySettings: some View {
         Form {
+            Section("Local files") {
+                Toggle("Allow file access", isOn: Binding(
+                    get: { model.settings.resolvedLocalFileAccessEnabled },
+                    set: { enabled in
+                        model.settings.localFileAccessEnabled = enabled
+                        if !enabled { model.settings.localFileWriteAccessEnabled = false }
+                        model.persistSettings()
+                    }
+                ))
+                Text("Give Scholia a path or an approximate filename and folder in chat. It can search your Mac and read matching documents, text, code, and images. Files it reads are sent to your selected model to answer your request.")
+                    .font(.caption).foregroundStyle(.secondary)
+                Toggle("Allow write access", isOn: Binding(
+                    get: { model.settings.resolvedLocalFileWriteAccessEnabled },
+                    set: { enabled in
+                        model.settings.localFileWriteAccessEnabled = enabled
+                        model.persistSettings()
+                    }
+                ))
+                .disabled(!model.settings.resolvedLocalFileAccessEnabled)
+                Text("Off by default. When enabled, Scholia can create folders and create or edit text and code files you ask it to change. Turning it off blocks further writes, including during an answer.")
+                    .font(.caption).foregroundStyle(.secondary)
+                Text("macOS may ask for access to Documents, Desktop, or Downloads. For other protected locations, grant Scholia Full Disk Access in System Settings.")
+                    .font(.caption).foregroundStyle(.secondary)
+                Button("Open Full Disk Access settings") {
+                    if let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_AllFiles") {
+                        NSWorkspace.shared.open(url)
+                    }
+                }
+            }
             Section("Visible workspace context") {
                 Toggle(
                     "Use compact visible-window context by default",
@@ -1464,7 +1494,7 @@ struct SettingsView: View {
             Section("Local first") {
                 Label("No Scholia server, analytics, or telemetry", systemImage: "checkmark.shield.fill")
                 Text("Text and images are captured only after a question, selection, shortcut, Services command, clipboard action, or region gesture. Images are resized locally before they leave your Mac.")
-                Text("Only the selected content, the context mode you choose, source app/window labels, your question, and bounded conversation history are sent directly to the provider you choose.")
+                Text("Selected content, the context mode you choose, source app/window labels, files read for your request, your question, and bounded conversation history are sent directly to the provider you choose.")
                 Text("Quick Ask prompts and answers are temporary. Full chats are stored locally only after you open or move a conversation into chat, and can be cleared from the chat history menu.")
             }
             Section("Endpoint safety") {
@@ -1646,11 +1676,14 @@ struct SettingsView: View {
         apiKey = model.apiKey(for: provider.id)
     }
 
-    private func saveKey(testAfterSaving: Bool = false) {
+    private func saveKey(testAfterSaving: Bool = false, modelID: String? = nil) {
         do {
             try model.saveAPIKey(apiKey, for: provider.id)
             keyStatus = apiKey.isEmpty ? "Credential removed." : "Saved securely in Keychain."
-            if testAfterSaving { model.testActiveProvider(apiKeyOverride: apiKey) }
+            if testAfterSaving {
+                keyStatus = nil
+                model.testModel(modelID ?? model.activeModel, providerID: provider.id, apiKeyOverride: apiKey)
+            }
         } catch {
             keyStatus = error.localizedDescription
         }

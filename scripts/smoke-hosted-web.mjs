@@ -44,7 +44,20 @@ try {
     await until('document.querySelector(".study-dashboard")');
   };
   await login('alice@example.com');
-  assert.equal(
+  await evaluate(`window.preservedAgenda = document.querySelector('.assignment-agenda');
+    document.querySelector('#course-search').value = 'test';
+    document.querySelector('#course-search').dispatchEvent(new Event('input', { bubbles: true }));`);
+  assert.equal(await evaluate("window.preservedAgenda === document.querySelector('.assignment-agenda')"), true,
+    'Workspace search preserves the assignment panel');
+  await evaluate(`window.preservedWorkspaces = document.querySelector('.workspace-panel');
+    document.querySelector('#assignment-search').value = 'test';
+    document.querySelector('#assignment-search').dispatchEvent(new Event('input', { bubbles: true }));`);
+  assert.equal(await evaluate("window.preservedWorkspaces === document.querySelector('.workspace-panel')"), true,
+    'Assignment search preserves the workspace panel');
+  await evaluate(`for (const id of ['course-search', 'assignment-search']) {
+    const input = document.getElementById(id); input.value = '';
+    input.dispatchEvent(new Event('input', { bubbles: true })); }`);
+  assert.notEqual(
     await evaluate('getComputedStyle(document.querySelector("#review-due")).display'),
     'none'
   );
@@ -70,6 +83,24 @@ try {
     'document.querySelector(".message.assistant")?.textContent.includes("magnitude and direction")'
   );
   await browser.screenshot(join(output, 'hosted-workspace.png'));
+  await until('document.querySelector("#send").getAttribute("aria-label") !== "Stop answer"');
+  await evaluate(
+    `fetch('/api/action',{method:'POST',headers:{'Content-Type':'application/json','X-Scholia-Token':document.querySelector('meta[name=scholia-token]').content},body:JSON.stringify({action:'import',name:'scan-014.txt',data:btoa('# Study notes\\n## Eigenvectors and bases\\nKey ideas: diagonalization preserves eigenvector directions. Remember how basis changes work.')})})`
+  );
+  await until('document.querySelector("#material-nav").textContent.includes("scan-014")');
+  await click('[data-action="materials"]');
+  await until('document.querySelector(".course-materials")');
+  assert.ok(await evaluate('[...document.querySelectorAll(".material-subheader")].some(e => e.textContent === "Eigenvectors and bases")'),
+    'A generic filename receives a topic subheader from its content');
+  await evaluate(`const input = document.querySelector('#material-search'); input.value = 'eigenvectors';
+    input.dispatchEvent(new Event('input', { bubbles: true }));`);
+  assert.equal(await evaluate('document.querySelectorAll(".course-materials .material-row").length'), 1);
+  assert.match(await evaluate('document.querySelector(".course-materials .material-row strong").textContent'), /scan-014/);
+  await browser.screenshot(join(output, 'hosted-content-classification.png'));
+  await send('Emulation.setDeviceMetricsOverride', { width: 390, height: 844, deviceScaleFactor: 1, mobile: true });
+  assert.equal(await evaluate('document.documentElement.scrollWidth <= innerWidth + 1'), true,
+    'Content subheaders fit a mobile workspace');
+  await send('Emulation.setDeviceMetricsOverride', { width: 1460, height: 960, deviceScaleFactor: 1, mobile: false });
   await click('#account-settings');
   await until('document.querySelector("#provider-settings")?.closest("dialog").open');
   assert.equal(
@@ -93,7 +124,7 @@ try {
   assert.equal(await evaluate('document.documentElement.scrollWidth <= innerWidth+1'), true);
   assert.deepEqual(browser.errors, []);
   console.log(
-    'PASS: Chromium hosted sign-in, private workspace, import, document reading, tutor conversation, account settings, sign-out, second-user isolation and mobile layout'
+    'PASS: Chromium hosted sign-in, isolated dashboard updates, content classification/search, private workspace, import, document reading, tutor conversation, account settings, sign-out, second-user isolation and mobile layout'
   );
 } finally {
   await browser?.close();

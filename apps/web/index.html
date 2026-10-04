@@ -12,13 +12,33 @@
   </head>
   <body>
     <div class="app">
-      <aside class="sidebar" aria-label="Course navigation">
-        <a class="brand" href="#" data-action="library"
-          ><img src="/icon.svg" alt="" /><span>scholia</span><span class="edition">STUDY</span></a
-        >
-        <button class="nav-all" data-action="library">
-          <span>▦</span> Dashboard <span id="course-count" class="count"></span>
+      <aside id="course-navigation" class="sidebar" aria-label="Course navigation" tabindex="-1">
+        <div class="sidebar-heading">
+          <a class="brand" href="#" data-action="library"
+            ><img src="/icon.svg" alt="" /><span>scholia</span><span class="edition">STUDY</span></a
+          >
+          <button
+            class="icon-button sidebar-close"
+            data-action="closeSidebar"
+            aria-label="Close navigation"
+          >
+            ×
+          </button>
+        </div>
+        <button class="nav-all" data-action="library" aria-current="page">
+          <span aria-hidden="true">▦</span> Dashboard <span id="course-count" class="count"></span>
         </button>
+        <button class="nav-all" data-action="assignments">
+          <span aria-hidden="true">☑</span> Assignments
+        </button>
+        <button class="nav-all" data-action="exams">
+          <span aria-hidden="true">▦</span> Exam dates
+        </button>
+        <div class="sidebar-study-tools" aria-label="Study actions">
+          <button data-action="reviewDue" class="sidebar-review">Review due</button>
+          <button data-action="practiceThis" class="sidebar-practice" hidden>Practice this</button>
+          <button data-action="create" class="sidebar-create">New workspace</button>
+        </div>
         <div id="workspace-heading" class="section-label">
           YOUR WORKSPACES <button data-action="create" aria-label="Create workspace">+</button>
         </div>
@@ -44,17 +64,44 @@
           </div>
         </div>
       </aside>
-      <main>
+      <button
+        class="sidebar-scrim"
+        data-action="closeSidebar"
+        tabindex="-1"
+        aria-hidden="true"
+        hidden
+      ></button>
+      <main id="main-content" tabindex="-1">
         <header class="topbar">
-          <button class="icon-button mobile-menu" data-action="sidebar" aria-label="Toggle sidebar">
-            ☰
+          <button
+            class="icon-button mobile-menu"
+            data-action="sidebar"
+            aria-label="Open navigation"
+            aria-controls="course-navigation"
+            aria-expanded="false"
+          >
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 6h16M4 12h16M4 18h16" /></svg>
           </button>
-          <div id="breadcrumb">Your study space</div>
+          <nav id="breadcrumb" aria-label="Breadcrumb">Your study space</nav>
           <div class="topbar-actions">
+            <button
+              class="action-search"
+              data-action="search"
+              title="Search files and contents (⌘K / Ctrl+K)"
+              aria-label="Search files and contents"
+              aria-haspopup="dialog"
+            >
+              <svg viewBox="0 0 24 24" aria-hidden="true">
+                <circle cx="10.5" cy="10.5" r="6.5" />
+                <path d="m16 16 4 4" /></svg
+              ><span>Search files</span><kbd aria-hidden="true">⌘ K</kbd>
+            </button>
             <button id="review-due" data-action="reviewDue">Review due</button
             ><button id="practice-this" data-action="practiceThis" hidden>Practice this</button
-            ><button data-action="canvas">Connect Canvas</button
-            ><button id="add-document" data-action="upload">＋ Add documents</button
+            ><button class="action-canvas" data-action="canvas">Connect Canvas</button
+            ><button id="add-document" data-action="upload" aria-label="Add documents">
+              <span aria-hidden="true">＋</span><span class="upload-full-label">Add documents</span
+              ><span class="upload-short-label">Add</span></button
             ><button data-action="create" class="primary">New workspace</button>
           </div>
         </header>
@@ -94,6 +141,10 @@
                 ＋
               </button>
             </header>
+            <div class="conversation-scope">
+              <span id="conversation-scope"></span>
+              <button id="change-scope" data-action="askCourse">Ask about this course</button>
+            </div>
             <div class="tutor-modes" role="group" aria-label="Teaching style">
               <button data-mode="Explain">Explain</button
               ><button data-mode="Guide me">Guide me</button
@@ -105,16 +156,18 @@
                 <span class="online-dot"></span
                 ><span id="context-label">Grounded in your course</span><span>⌄</span>
               </summary>
-              <p>
+              <p id="context-description">
                 Questions include the current page, selected text, and your document. Long readings
                 use relevant pages from the complete local text index. Vision models also see page
                 images.
               </p>
-              <label
+              <label id="include-course-option"
                 ><input type="checkbox" id="include-course" checked /> Include downloaded course
                 materials</label
               >
-              <p>Cloud materials enter the tutor's context after you open and download them.</p>
+              <p id="context-coverage">
+                Cloud materials enter the tutor's context after you open and download them.
+              </p>
               <small id="context-summary"></small>
             </details>
             <div id="messages" class="messages" aria-live="polite"></div>
@@ -150,6 +203,9 @@
                 ><label class="model-select"
                   ><span class="sr-only">Model</span
                   ><select id="model-picker" aria-label="Model"></select></label
+                ><label id="reasoning-control" class="reasoning-select" hidden
+                  ><span>Reasoning</span
+                  ><select id="reasoning-picker" aria-label="Reasoning mode"></select></label
                 ><button id="send" type="submit" class="send" aria-label="Send question">↑</button>
               </div>
             </form>
@@ -160,11 +216,11 @@
       </main>
     </div>
     <dialog id="practice-dialog" aria-label="Practice and review"></dialog>
-    <dialog id="canvas-dialog">
+    <dialog id="canvas-dialog" aria-labelledby="canvas-dialog-title">
       <form method="dialog" class="dialog-heading">
         <span class="eyebrow">YOUR COURSES, TOGETHER</span><button aria-label="Close">×</button>
       </form>
-      <h2>Bring your courses along.</h2>
+      <h2 id="canvas-dialog-title">Bring your courses along.</h2>
       <p>Index your library now. Read at your own pace.</p>
       <label class="field"
         >Canvas address<input id="canvas-origin" value="https://canvas.ntnu.no"
@@ -187,9 +243,10 @@
         >
       </div>
       <div class="dialog-actions">
-        <button data-action="signIn">Sign in with Mac app ↗</button
+        <button data-action="signIn">Reconnect Canvas</button
         ><button data-action="connect" class="primary">Index all courses</button>
       </div>
+      <p id="canvas-connection-status" role="status">Your saved login is checked first. A sign-in window opens only if Canvas needs you to sign in again.</p>
       <details>
         <summary>Connect with a personal access token</summary>
         <p>Your token is stored in the Mac's Keychain after Canvas verifies it.</p>
@@ -197,6 +254,7 @@
           id="canvas-token"
           type="password"
           autocomplete="off"
+          aria-label="Canvas personal access token"
           placeholder="Canvas personal access token"
         /><button data-action="connectToken">Connect</button>
       </details>
@@ -206,13 +264,13 @@
       </p>
       <div id="canvas-notices" class="notices"></div>
     </dialog>
-    <dialog id="create-dialog">
+    <dialog id="create-dialog" aria-labelledby="create-dialog-title">
       <form id="create-form">
         <div class="dialog-heading">
           <span class="eyebrow">A NEW PLACE TO LEARN</span
           ><button type="button" data-action="closeCreate" aria-label="Close">×</button>
         </div>
-        <h2>Make room for curiosity.</h2>
+        <h2 id="create-dialog-title">Make room for curiosity.</h2>
         <p>Keep readings, questions, and discoveries together.</p>
         <label class="field"
           >Course name<input

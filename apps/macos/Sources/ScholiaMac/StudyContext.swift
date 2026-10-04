@@ -18,8 +18,17 @@ struct StudyContextPack: Sendable {
 
 enum StudyContextBuilder {
     static let documentBudget = 140_000
+    static func requestBudget(_ question: String) -> Int {
+        question.range(of: #"(?i)\b(overview|summari[sz]e|summary|entire|whole|complete|all pages|oppsummer|hele)\b"#, options: .regularExpression) == nil ? 48_000 : documentBudget
+    }
     static let courseBudget = 28_000
     static let assignmentBudget = 48_000
+
+    static func isCourseScheduleQuestion(_ question: String) -> Bool {
+        let text = question.lowercased().trimmingCharacters(in: .whitespacesAndNewlines)
+        guard text.range(of: #"\b(explain|solve|derive|prove|overview|summari[sz]e|why|how|and|also)\b"#, options: .regularExpression) == nil else { return false }
+        return text.range(of: #"^(when (?:is|are|do|does|must|should|will)\b.*\b(due|submit|deadline)|what(?:'s| is| are)?\b.*\b(due|deadlines?|submission status)|(?:show|list)\b.*\b(deadlines?|due dates?|overdue)|(?:upcoming|next|overdue) (?:assignments?|deadlines?))"#, options: .regularExpression) != nil
+    }
 
     static func citedSources(in answer: String, allowed: [StudySource]) -> [StudySource] {
         guard let documentID = allowed.first?.documentID,
@@ -60,11 +69,36 @@ enum StudyContextBuilder {
         document: StudyDocument?, index: StudyDocumentIndex?, currentPage: Int,
         question: String, selection: String, course: StudyCourse,
         store: StudyLibraryStore, includeCourse: Bool, assignment: CanvasMaterialReference? = nil,
-        assignmentFileNotices: [String: String] = [:], budget: Int = documentBudget
+        assignmentFileNotices: [String: String] = [:], selectionSource: StudySource? = nil, budget: Int = documentBudget
     ) -> StudyContextPack {
         let keywords = terms(question + " " + selection)
+        let courseScope = document == nil && assignment == nil
+        let scheduleOnly = courseScope && selection.isEmpty && isCourseScheduleQuestion(question)
+        let includeCourse = includeCourse || courseScope
+        let indexedCourseDocuments: [(StudyDocument, StudyDocumentIndex)] = includeCourse && !scheduleOnly
+            ? course.documents.compactMap { document in
+                guard !Task.isCancelled, document.kind != .preview,
+                    let index = try? store.index(for: document),
+                    index.pages.contains(where: { !$0.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty })
+                else { return nil }
+                return (document, index)
+            } : []
         var text = "Course: \(course.name)\n"
+        if includeCourse {
+            text += courseInformation(
+                course, readableDocumentIDs: scheduleOnly ? nil : Set(indexedCourseDocuments.map { $0.0.id }), keywords: keywords)
+        }
+        if scheduleOnly {
+            text += "\nUse the catalog dates and submission states above. Reading contents were not loaded for this schedule/status question; do not infer assignment instructions from titles.\n"
+            return StudyContextPack(text: text, sources: [], imagePages: [], wholeDocument: false,
+                totalPages: 0, summary: "Course dates and submission status")
+        }
         var sources: [StudySource] = []
+        if courseScope && !selection.isEmpty {
+            let location = selectionSource.map { " from \($0.title), page \($0.page)" } ?? ""
+            text += "\nSelected passage\(location):\n<selected-passage>\n\(TextInputPolicy.bounded(selection, maximumUTF16Units: 16_000))\n</selected-passage>\n"
+            if let selectionSource { sources.append(selectionSource) }
+        }
         var imagePages: [Int] = []
         var whole = true
         let pages = index?.pages ?? []
@@ -78,14 +112,16 @@ enum StudyContextBuilder {
                 let b = scores[right.number] ?? 0
                 return a == b ? left.number < right.number : a > b
             }
-            var priority =
-                requested + [current] + [current - 1, current + 1] + [1, document.pageCount] + ranked.map(\.number)
+            var priority = requested + [current]
+                + ranked.filter { (scores[$0.number] ?? 0) > 0 }.map(\.number)
+                + [current - 1, current + 1, 1, document.pageCount] + ranked.map(\.number)
             var seen = Set<Int>()
             priority = priority.filter { $0 > 0 && $0 <= document.pageCount && seen.insert($0).inserted }
             var used = 0
             var included: [StudyPage] = []
             let essentialPages = Set(requested + [current])
             for number in priority {
+                if Task.isCancelled { break }
                 guard let page = pages.first(where: { $0.number == number }) else { continue }
                 let remaining = budget - used
                 guard remaining > 0 else { break }
@@ -101,14 +137,15 @@ enum StudyContextBuilder {
             }
             whole = whole && included.count == pages.count
             text += "Reading: \(document.title)\nCurrent page: \(current) of \(document.pageCount)\n"
-            if let notice = document.contentNotice { text += "Content coverage: \(notice)\n" }
+            if let notice = index?.extractionNotice ?? document.contentNotice { text += "Content coverage: \(notice)\n" }
             text +=
                 whole
                 ? "All document pages are included below.\n"
                 : "Relevant pages from the complete local index are included below; omitted pages are not visible in this request.\n"
-            if document.unreadablePages > 0 {
+            let unreadablePages = index?.pages.filter { $0.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }.count ?? document.unreadablePages
+            if unreadablePages > 0 {
                 text +=
-                    "\(document.unreadablePages) page(s) have no readable text after OCR. Use attached page images for their content; do not pretend to have seen unprovided images.\n"
+                    "\(unreadablePages) page(s) have no readable text after OCR. Use attached page images for their content; do not pretend to have seen unprovided images.\n"
             }
             if !selection.isEmpty {
                 text += "Selected passage:\n<selected-passage>\n\(selection)\n</selected-passage>\n"
@@ -136,37 +173,140 @@ enum StudyContextBuilder {
             if context.unavailableFiles > 0 { assignmentSummary += " · \(context.unavailableFiles) unavailable" }
         }
         if includeCourse {
-            var candidates: [(StudySource, String, Int)] = []
-            for other in course.documents where other.id != document?.id && !assignmentDocumentIDs.contains(other.id) {
-                guard let otherIndex = try? store.index(for: other) else { continue }
-                for page in otherIndex.pages {
+            var candidates: [(source: StudySource, text: String, score: Int, order: Int)] = []
+            for (order, entry) in indexedCourseDocuments.enumerated() {
+                if Task.isCancelled { break }
+                let (other, otherIndex) = entry
+                guard other.id != document?.id && !assignmentDocumentIDs.contains(other.id) else { continue }
+                for page in otherIndex.pages where !page.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                     let score = terms(page.text + " " + other.title).intersection(keywords).count
-                    if score > 0 || document == nil {
+                    if score > 0 || courseScope {
                         candidates.append(
-                            (StudySource(documentID: other.id, title: other.title, page: page.number), page.text, score)
+                            (StudySource(documentID: other.id, title: other.title, page: page.number), page.text, score, order)
                         )
                     }
                 }
             }
-            candidates.sort { $0.2 == $1.2 ? $0.0.id < $1.0.id : $0.2 > $1.2 }
+            candidates.sort {
+                if $0.score != $1.score { return $0.score > $1.score }
+                if $0.order != $1.order { return $0.order < $1.order }
+                return $0.source.page < $1.source.page
+            }
+            var selected = Array(candidates.prefix(16))
+            if courseScope {
+                // Start with one relevant passage per document so broad questions span the course.
+                var seen = Set<UUID>()
+                selected = Array(candidates.filter { seen.insert($0.source.documentID).inserted }.prefix(16))
+                let selectedIDs = Set(selected.map { $0.source.id })
+                selected += candidates.filter { !selectedIDs.contains($0.source.id) }.prefix(max(0, 16 - selected.count))
+            }
             var used = 0
-            for (source, content, _) in candidates.prefix(16) {
+            var shortened = false
+            for (position, entry) in selected.enumerated() {
+                let (source, content, _, _) = entry
                 let remaining = courseBudget - used
-                guard remaining > 0 else { break }
-                let piece = TextInputPolicy.bounded(content, maximumUTF16Units: min(6_000, remaining))
-                text += "\n--- Course reference: \(source.title), page \(source.page) ---\n\(piece)\n"
-                sources.append(source)
-                used += piece.utf16.count + 100
+                let heading = "\n--- Course reference: \(TextInputPolicy.bounded(source.title, maximumUTF16Units: 180)), page \(source.page) ---\n"
+                let overhead = heading.utf16.count + 70
+                let allowance = courseScope ? max(0, remaining / (selected.count - position) - overhead) : remaining - overhead
+                guard allowance > 0 else { break }
+                let piece = TextInputPolicy.bounded(content, maximumUTF16Units: min(6_000, allowance))
+                text += heading + piece + "\n"
+                if piece != content {
+                    text += "[Passage shortened; remaining page text is not included.]\n"
+                    shortened = true
+                }
+                if !sources.contains(where: { $0.id == source.id }) { sources.append(source) }
+                used += piece.utf16.count + heading.utf16.count + 70
+            }
+            if courseScope {
+                let count = Set(sources.map(\.documentID)).count
+                text += "\nCourse coverage: \(sources.count) passages from \(count) of \(indexedCourseDocuments.count) readable saved documents. "
+                text += "Catalog metadata describes the course, but does not provide the contents of remote materials. "
+                if candidates.count > sources.count || shortened {
+                    text += "Relevant excerpts were selected across the saved course index; omitted or shortened text is not visible in this request. "
+                }
+                text += "Do not claim complete coverage of every course reading. Name each source document with its page when citing it.\n"
             }
         }
         let currentCount = sources.filter { $0.documentID == document?.id }.count
         let summary =
             document == nil
-            ? (assignment == nil ? "\(sources.count) course passages" : "Assignment context")
+            ? (assignment == nil ? "Course information · \(sources.count) saved passages" : "Assignment context")
             : (whole ? "All \(pages.count) pages" : "\(currentCount) of \(pages.count) pages")
         return StudyContextPack(
             text: text, sources: sources, imagePages: imagePages, wholeDocument: whole,
             totalPages: pages.count, summary: summary + assignmentSummary)
+    }
+
+    private static func courseInformation(
+        _ course: StudyCourse, readableDocumentIDs: Set<UUID>?, keywords: Set<String>
+    ) -> String {
+        func value(_ text: String, limit: Int = 180) -> String {
+            TextInputPolicy.bounded(text.replacingOccurrences(of: "\n", with: " "), maximumUTF16Units: limit)
+        }
+        var text = "\nCourse information (saved metadata; not the contents of remote materials):\n"
+        text += "Code: \(value(course.code.isEmpty ? "Not specified" : course.code))\n"
+        text += "Term: \(value(course.term ?? "Not specified"))\n"
+        text += "Current time: \(Date().ISO8601Format()); local timezone: \(TimeZone.current.identifier)\n"
+        text += "Catalog last refreshed: \(course.catalogUpdatedAt?.ISO8601Format() ?? "Not indexed")\n"
+        text += "\(course.documents.count) saved documents; \(course.materials.count) catalog entries.\n"
+        if let readableDocumentIDs { text += "\(readableDocumentIDs.count) saved documents have readable text.\n" }
+        if !(course.catalogWarnings ?? []).isEmpty {
+            text += "Catalog is incomplete or has sync warnings; some materials or deadlines may be missing.\n"
+        }
+        let groups = StudyMaterialOrganizer.groups(for: course)
+        var inventory = groups.flatMap { group in group.items.map { (group.title, $0) } }
+        inventory.sort {
+            let lhs = terms($0.0 + " " + $0.1.title + " " + ($0.1.topic ?? "")).intersection(keywords).count
+            let rhs = terms($1.0 + " " + $1.1.title + " " + ($1.1.topic ?? "")).intersection(keywords).count
+            return lhs == rhs ? $0.1.title.localizedStandardCompare($1.1.title) == .orderedAscending : lhs > rhs
+        }
+        text += "\nMaterial inventory and topics (titles and saved classification only):\n"
+        var used = 0
+        var included = 0
+        for (group, item) in inventory {
+            let availability = item.documentID.map {
+                readableDocumentIDs == nil ? "saved; contents not loaded for this request"
+                    : readableDocumentIDs?.contains($0) == true ? "saved; readable excerpts may be provided below" : "saved; readable text unavailable"
+            } ?? "not downloaded; contents unavailable"
+            let topic = item.topic.map { "; topic: \(value($0, limit: 100))" } ?? ""
+            let line = "- \(value(item.title)); group: \(value(group, limit: 100))\(topic); \(availability).\n"
+            guard used + line.utf16.count <= 12_000 else { break }
+            text += line
+            used += line.utf16.count
+            included += 1
+        }
+        if included < inventory.count { text += "[\(inventory.count - included) additional inventory items omitted for length.]\n" }
+        if inventory.isEmpty { text += "No materials have been added or indexed.\n" }
+
+        let assignments = StudyAssignment.list(courses: [course], includeCompleted: true, includeHidden: true).sorted {
+            let lhs = terms($0.material.title).intersection(keywords).count
+            let rhs = terms($1.material.title).intersection(keywords).count
+            if lhs != rhs { return lhs > rhs }
+            let lhsComplete = $0.details?.status.isComplete == true
+            let rhsComplete = $1.details?.status.isComplete == true
+            if lhsComplete != rhsComplete {
+                return !lhsComplete
+            }
+            return ($0.dueDate ?? .distantFuture) < ($1.dueDate ?? .distantFuture)
+        }
+        text += "\nAssignments and deadlines (saved Canvas metadata; timestamps include their offsets):\n"
+        used = 0
+        included = 0
+        for assignment in assignments {
+            let details = assignment.details
+            let due = details?.dueAt ?? (details == nil ? "not synced" : "no due date recorded")
+            let status = details?.status.submissionLabel ?? "Status not synced"
+            let grade = details?.gradeLabel.map { "; grade: \(value($0, limit: 80))" } ?? ""
+            let line = "- \(value(assignment.material.title)); due: \(value(due, limit: 60)); \(status)\(grade)\(assignment.isHidden ? "; hidden in workspace" : "").\n"
+            guard used + line.utf16.count <= 10_000 else { break }
+            text += line
+            used += line.utf16.count
+            included += 1
+        }
+        if included < assignments.count { text += "[\(assignments.count - included) additional assignment records omitted for length.]\n" }
+        if assignments.isEmpty { text += "No assignment records are indexed; this does not establish that the course has no assignments.\n" }
+        return text
     }
 
     private struct AssignmentContext {

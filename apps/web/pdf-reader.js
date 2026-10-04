@@ -60,7 +60,7 @@ export class StudyPDFReader {
     this.abort = new AbortController();
     this.urls = [];
     this.ready = false;
-    toolbar.innerHTML = `${tool('outline', '☷', 'Table of contents')}${tool('search', '⌕', 'Search PDF (⌘F)')}<select data-pdf-select="layout" aria-label="Page layout"><option value="continuous">Continuous</option><option value="page">Single page</option><option value="spread">Two-page spread</option></select><div class="tools">${tool('zoomOut', '−', 'Zoom out')}<select data-pdf-select="zoom" aria-label="PDF zoom"><option value="auto">Automatic</option><option value="page-fit">Fit page</option><option value="page-width" selected>Fit width</option>${[50, 75, 100, 125, 150, 200].map((n) => `<option value="${n / 100}">${n}%</option>`).join('')}</select>${tool('zoomIn', '+', 'Zoom in')}${tool('crop', '⌗', 'Select a figure')}${tool('chat', 'Chat', 'Show or hide tutor')}<details class="reader-more"><summary aria-label="More PDF controls" title="More PDF controls">•••</summary><div>${tool('guide', 'Guide me')}${tool('theme', 'Light / dark reader')}${tool('download', 'Download PDF')}${tool('print', 'Print PDF (⌘P)')}${tool('original', 'Open original PDF')}<button data-action="upload">Choose file</button></div></details></div>`;
+    toolbar.innerHTML = `${tool('outline', '☷', 'Table of contents')}${tool('search', '⌕', 'Search PDF (⌘F)')}<select data-pdf-select="layout" aria-label="Page layout"><option value="continuous">Continuous</option><option value="page">Single page</option><option value="spread">Two-page spread</option></select><div class="tools">${tool('zoomOut', '−', 'Zoom out')}<select data-pdf-select="zoom" aria-label="PDF zoom"><option value="auto">Automatic</option><option value="page-fit">Fit page</option><option value="page-width" selected>Fit width</option>${[50, 75, 100, 125, 150, 200].map((n) => `<option value="${n / 100}">${n}%</option>`).join('')}</select>${tool('zoomIn', '+', 'Zoom in')}${tool('crop', '⌗', 'Select a figure')}${tool('download', '↓ Download', 'Download PDF')}${tool('chat', 'Chat', 'Show or hide tutor')}<details class="reader-more"><summary aria-label="More PDF controls" title="More PDF controls">•••</summary><div>${tool('guide', 'Guide me')}${tool('theme', 'Light / dark reader')}${tool('print', 'Print PDF (⌘P)')}${tool('original', 'Open original PDF')}<button data-action="upload">Choose file</button></div></details></div>`;
     host.classList.add('pdf-active');
     host.innerHTML = `<section class="pdf-search-bar" hidden><select aria-label="Search mode"><option value="exact">Exact</option><option value="semantic">Semantic</option></select><input type="search" placeholder="Find words or phrases…" aria-label="Search this PDF"><small role="status"></small>${tool('findPrevious', '↑', 'Previous result')}${tool('findNext', '↓', 'Next result')}${tool('closeSearch', '×', 'Close search')}</section><div class="pdf-reading-area"><aside class="pdf-outline-panel" hidden><strong>Contents</strong><nav></nav></aside><div class="study-pdf-stage"><div class="study-pdf-viewport" tabindex="0" aria-label="PDF pages"><div class="pdfViewer"></div></div></div></div>`;
     this.viewport = host.querySelector('.study-pdf-viewport');
@@ -85,11 +85,13 @@ export class StudyPDFReader {
       abortSignal: this.abort.signal,
     });
     this.links.setViewer(this.viewer);
+    toolbar.querySelector('[data-pdf=download]').disabled = true;
     this.bus.on('pagesinit', () => {
       if (this.abort.signal.aborted) return;
       this.viewer.currentScaleValue = 'page-width';
       this.viewer.currentPageNumber = this.page;
       this.ready = true;
+      toolbar.querySelector('[data-pdf=download]').disabled = false;
     });
     this.bus.on('pagechanging', ({ pageNumber }) => {
       if (!this.ready || this.page === pageNumber) return;
@@ -456,10 +458,9 @@ export class StudyPDFReader {
     bubble.setAttribute('role', 'dialog');
     bubble.setAttribute('aria-label', 'Ask about selected passage');
     bubble.innerHTML =
-      '<blockquote></blockquote><form><input aria-label="Ask about selected passage" placeholder="Ask about this…" maxlength="16000"><button type="submit">Explain</button></form><div class="popup-actions"><small>Selection + document context</small><button type="button" data-chat>Open in chat ↗</button><button type="button" data-close aria-label="Close selection popup">×</button></div>';
+      '<blockquote></blockquote><button type="button" data-close aria-label="Close selection popup">×</button><form><input aria-label="Ask about selected passage" placeholder="Add a question (optional)" maxlength="16000"><button type="submit">Explain</button></form><div class="popup-actions"><small>Passage + context</small><button type="button" data-chat>Open in chat ↗</button></div>';
     bubble.querySelector('blockquote').textContent = text.slice(0, 240);
-    bubble.style.left = `${Math.max(8, Math.min(window.innerWidth - 358, rect.left + rect.width / 2 - 175))}px`;
-    bubble.style.top = `${rect.bottom + 152 < window.innerHeight ? rect.bottom + 8 : Math.max(8, rect.top - 145)}px`;
+    bubble.style.left = `${Math.max(8, Math.min(window.innerWidth - 328, rect.left + rect.width / 2 - 160))}px`;
     bubble.addEventListener('pointerdown', (event) => {
       if (event.target.closest('button')) event.preventDefault();
     });
@@ -482,17 +483,18 @@ export class StudyPDFReader {
         submit.disabled = false;
       }
     });
-    bubble.querySelector('[data-chat]').addEventListener('click', () => {
-      bubble.remove();
-      Promise.resolve(
-        this.onSelection(text.slice(0, 16000), page, false, bubble.querySelector('input').value)
-      ).catch((e) => this.notify(e.message));
+    bubble.querySelector('[data-chat]').addEventListener('click', async () => {
+      try {
+        if (await this.onSelection(text.slice(0, 16000), page, false, bubble.querySelector('input').value)) bubble.remove();
+      } catch (error) { this.notify(error.message); }
     });
     bubble.querySelector('[data-close]').addEventListener('click', () => bubble.remove());
     bubble.addEventListener('keydown', (event) => {
       if (event.key === 'Escape') bubble.remove();
     });
     document.body.append(bubble);
+    const height = bubble.getBoundingClientRect().height;
+    bubble.style.top = `${rect.bottom + height + 8 < window.innerHeight ? rect.bottom + 6 : Math.max(8, rect.top - height - 6)}px`;
     this.selectionBubble = bubble;
   }
   key(event) {

@@ -1,4 +1,4 @@
-import hljs from 'highlight.js/lib/common';
+import hljs from 'highlight.js';
 import katex from 'katex';
 import MarkdownIt from 'markdown-it';
 
@@ -525,4 +525,23 @@ export function renderReasoning(value, { streaming = false } = {}) {
   if (!reasoning) return '';
   const activity = reasoningActivityLabel(reasoning);
   return `<details class="scholia-reasoning"><summary><span class="scholia-reasoning__activity">${escapeHtml(activity)}</span><span class="scholia-reasoning__hint">${streaming ? 'live · provided by model' : 'provided by model'}</span></summary><div class="scholia-reasoning__body">${renderMarkdown(reasoning)}</div></details>`;
+}
+
+export function addActivity(message, event) {
+  if (!event?.title) return;
+  const entry = { title: String(event.title).slice(0, 180), detail: String(event.detail || '').slice(0, 2000), timestamp: event.timestamp || Date.now() };
+  if (message.activity?.at(-1)?.title === entry.title && message.activity?.at(-1)?.detail === entry.detail) return;
+  message.activity = [...(message.activity || []), entry].slice(-80);
+}
+
+export function renderActivity(events = []) {
+  if (!Array.isArray(events) || !events.length) return '';
+  return `<details class="chat-activity" data-detail="activity"><summary>Activity · ${events.length} <span>${escapeHtml(events.at(-1)?.title || '')}</span></summary><ol>${events.slice(-80).map((event) => `<li><strong>${escapeHtml(event.title)}</strong>${event.detail ? `<pre>${escapeHtml(event.detail)}</pre>` : ''}</li>`).join('')}</ol></details>`;
+}
+
+export function bindActivityDisclosure(root, message) {
+  const details = root.querySelector('.chat-activity');
+  if (!details) return;
+  details.open = message.activityExpanded === true;
+  details.addEventListener('toggle', () => { message.activityExpanded = details.open; });
 }

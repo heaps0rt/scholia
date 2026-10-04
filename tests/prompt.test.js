@@ -66,14 +66,19 @@ test('conversation is bounded and roles are filtered', () => {
   assert.equal(clean.find((message) => message.content === '28')?.imageDataUrl, 'data:image/png;base64,aGVsbG8=');
 });
 
-test('guided learning graduates help, permits explicit solutions and does not require closing questions', () => {
-  const prompt = systemPrompt('en', { learningMode: true });
-  assert.match(prompt, /Guided learning mode is active/);
-  assert.match(prompt, /completed solution when explicitly requested/);
-  assert.match(prompt, /conceptual cue to a method cue to a partial step/);
-  assert.match(prompt, /ask one focused question at a time/);
-  assert.match(prompt, /Do not require every response to end in a question/);
-  assert.doesNotMatch(prompt, /even when the user asks|end every response with/);
-  assert.doesNotMatch(systemPrompt('en'), /Guided learning mode/);
+test('each mode preserves the learning boundary without an explicit-request loophole', () => {
+  for (const language of ['en', 'no', 'es']) {
+    for (const mode of ['Explain', 'Guide me', 'Practice', true, false]) {
+      const prompt = systemPrompt(language, { learningMode: mode });
+      assert.match(prompt, /never produce a complete submission/);
+      assert.match(prompt, /Do not complete the work piecemeal/);
+      assert.match(prompt, /Do not accuse, shame/);
+      assert.match(prompt, /already supplied worked steps directly/);
+      assert.doesNotMatch(prompt, /completed solution when explicitly requested|full solution when explicitly requested|unless requested/);
+    }
+  }
+  assert.match(systemPrompt('en', { learningMode: true }), /Guide me mode:/);
+  assert.match(systemPrompt('en', { learningMode: 'Practice' }), /Practice mode:/);
+  assert.match(systemPrompt('en'), /Explain mode:/);
   assert.match(learningModeInstructions('no'), /Veiledet læringsmodus/);
 });
