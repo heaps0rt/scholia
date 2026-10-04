@@ -1,5 +1,5 @@
 import { MAX_FILE_TEXT } from '../../../packages/core/src/file-attachments.js';
-import { extractPdfContext } from './pdf-context.js';
+import { extractPdfContext } from './pdf/pdf-context.js';
 import { normalizeImageFile } from './image-input.js';
 import { extractOfficeText } from './office-text.js';
 

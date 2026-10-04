@@ -175,6 +175,7 @@ npm run bridge:install:opencode
 Each accepts `-- --port N` or `-- --uninstall`. Node.js and the chosen CLI must
 be installed. To start Codex or Claude directly, use `npm run bridge:codex` or
 `npm run bridge:claude`; opencode uses `opencode serve --port 4096`.
+Rerun the installer if the source folder or launcher paths change.
 
 Disable Scholia for a site from the popup or toolbar. Allowlist mode keeps it
 inactive except on the hostnames you choose.
@@ -184,8 +185,8 @@ inactive except on the hostnames you choose.
 Browser verification uses Chromium. After building:
 
 ```sh
-node scripts/smoke-chromium-region.mjs
-node scripts/smoke-chromium-history.mjs
+node scripts/smoke/browser/smoke-chromium-region.mjs
+node scripts/smoke/browser/smoke-chromium-history.mjs
 npm run smoke:chromium:recursion
 ```
 

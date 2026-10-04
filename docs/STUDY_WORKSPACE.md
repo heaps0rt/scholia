@@ -273,4 +273,4 @@ Removing a native workspace retains imported files for recovery. See
 conversations, and provider settings. For a website independent of the Mac,
 follow [Hosting](HOSTING.md).
 
-For tests and smoke checks, see [Contributing](../CONTRIBUTING.md).
+For tests and smoke checks, see [Contributing](CONTRIBUTING.md).

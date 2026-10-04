@@ -14,7 +14,8 @@ From the repository root:
 npm run update:macos
 ```
 
-Or double-click [Update Scholia.command](../../Update%20Scholia.command). It
+Or double-click [Update Scholia.command](../../scripts/macos/Update%20Scholia.command)
+in `scripts/macos`. It
 installs dependencies, builds, installs in Applications, and opens Scholia. Later,
 use **Scholia → Update Scholia…**. A Terminal window shows progress.
 
@@ -22,6 +23,8 @@ Updates use the current checkout, including local edits; update your checkout
 first to get changes from GitHub. Keep the source folder on your Mac. If you move
 it, run its updater once to reconnect the app. Saved data and credentials survive
 app replacement; a failed replacement restores the previous app.
+If the installed app cannot find its updater after a source-layout change, run
+`npm run update:macos` from the repository root once.
 
 Local updates use incremental debug builds. For an optimized build, use
 `npm run update:macos -- --release`. `npm run build:macos` only builds the bundle;
@@ -148,7 +151,7 @@ accounts and files.
 
 ## Development
 
-See [Contributing](../../CONTRIBUTING.md) for tests and smoke checks. Native smoke
+See [Contributing](../../docs/CONTRIBUTING.md) for tests and smoke checks. Native smoke
 scripts accept `SDKROOT`, use temporary libraries, and make no live provider
 requests. Browser verification uses Chromium. Full Xcode is needed for the Swift
 package's XCTest suite.

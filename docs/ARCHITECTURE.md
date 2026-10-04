@@ -4,7 +4,7 @@ Scholia has a native Mac app, a Chrome extension, and a hosted web service.
 `apps/web` is the browser workspace used by both the hosted service and the Mac
 app's optional local server. The three libraries do not synchronize.
 
-For the directory map and development commands, see [Contributing](../CONTRIBUTING.md).
+For the directory map and development commands, see [Contributing](CONTRIBUTING.md).
 For user-facing behavior, see the [workspace guide](STUDY_WORKSPACE.md).
 
 ## Shared contracts
@@ -79,13 +79,14 @@ for recovery after a conflict.
 with capability flags for hosted features. It needs no Mac process or loopback
 bridge.
 
-| Module                                | Responsibility                                                                    |
-| ------------------------------------- | --------------------------------------------------------------------------------- |
-| `store.js`                            | SQLite accounts, password hashes, sessions, and credential encryption             |
-| `workspaces.js`                       | Account-scoped state, serialized mutations, and document revisions                |
-| `documents.js` / `document-worker.js` | Originals, text indexes, and extraction in worker threads                         |
-| `canvas.js`                           | Account-specific Canvas access and the configured host allowlist                  |
-| `network.js`                          | DNS validation, private-address rejection, download limits, and redirect handling |
+| Module          | Responsibility                                                                    |
+| --------------- | --------------------------------------------------------------------------------- |
+| `store.js`      | SQLite accounts, password hashes, sessions, and credential encryption             |
+| `workspaces.js` | Account-scoped state, serialized mutations, and document revisions                |
+| `documents/`    | Originals, text indexes, OCR, and extraction in worker threads                    |
+| `courses/`      | Canvas access, public course sources, and update scheduling                       |
+| `search/`       | Account search indexes and worker threads                                         |
+| `network.js`    | DNS validation, private-address rejection, download limits, and redirect handling |
 
 Passwords use salted scrypt. Sessions store hashed tokens and expire after seven
 days. Provider and Canvas credentials use AES-256-GCM with a server-held key.
@@ -139,5 +140,5 @@ known exam IDs and timing constraints before applying them.
 Unit and service tests cover contracts, account separation, CSRF, credentials,
 revision conflicts, and context handling. Native smoke runners link application
 code against temporary libraries and deterministic fixtures. Browser smoke
-checks run in Chromium. [Contributing](../CONTRIBUTING.md) lists the commands and
+checks run in Chromium. [Contributing](CONTRIBUTING.md) lists the commands and
 explains which checks run in CI.

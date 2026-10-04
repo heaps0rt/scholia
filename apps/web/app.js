@@ -1,7 +1,7 @@
-import { StudyPDFReader } from './pdf-reader.js';
-import { studyModelPickerMarkup } from './model-picker.js';
-import { StudyNotebookReader } from './notebook-reader.js';
-import { StudyDocumentEditor, canEditDocument } from './document-editor.js';
+import { StudyPDFReader } from './reader/pdf-reader.js';
+import { studyModelPickerMarkup } from './chat/model-picker.js';
+import { StudyNotebookReader } from './reader/notebook-reader.js';
+import { StudyDocumentEditor, canEditDocument } from './reader/document-editor.js';
 import { renderMarkdown, escapeHtml as esc } from '../chrome/src/render.js';
 import {
   courseLibraryMarkup,
@@ -9,16 +9,16 @@ import {
   courseDisplayName,
   courseLibraryRenderKey,
   catalogChangeSummary,
-} from './course-library.js';
+} from './workspace/course-library.js';
 import { installHostedAccount } from './hosted-account.js';
-import { installTutorResize } from './workspace-resize.js';
-import { materialGroupsMarkup, materialsViewMarkup, materialViewPicker } from './materials.js';
+import { installTutorResize } from './workspace/workspace-resize.js';
+import { materialGroupsMarkup, materialsViewMarkup, materialViewPicker } from './workspace/materials.js';
 import {
   assignmentsMarkup,
   selectedAssignment,
   assignmentPageMarkup,
   assignmentAgendaMarkup,
-} from './assignments.js';
+} from './workspace/assignments.js';
 import {
   teachingModes,
   coursePrompts,
@@ -31,17 +31,17 @@ import {
   readerRenderKey,
   studyPollDelay,
   studyRenderKey,
-} from './study-session.js';
-import { StudyConversation } from './study-conversation.js';
-import { StudyPractice } from './practice.js';
+} from './workspace/study-session.js';
+import { StudyConversation } from './chat/study-conversation.js';
+import { StudyPractice } from './practice/practice.js';
 import { courseLinkTarget, isHTMLDocument, safeDocumentURL, restoreCourseLinks, originalDocumentHTML } from '../../packages/core/src/course-documents.js';
-import { installWorkspaceSearch } from './workspace-search.js';
-import { installExamPlanner } from './exam-planner.js';
-import './style.css';
-import './dashboard.css';
-import './assignment-page.css';
-import './exam-planner.css';
-import './navigation.css';
+import { installWorkspaceSearch } from './workspace/workspace-search.js';
+import { installExamPlanner } from './exams/exam-planner.js';
+import './styles/style.css';
+import './styles/dashboard.css';
+import './styles/assignment-page.css';
+import './styles/exam-planner.css';
+import './styles/navigation.css';
 
 const $ = (selector) => document.querySelector(selector);
 const compactNavigation = window.matchMedia('(max-width: 850px)');

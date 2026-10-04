@@ -20,27 +20,27 @@ import {
   providerSupportsFastMode,
   providerSupportsWebSearch
 } from '../../../packages/core/src/providers.js';
-import { CHAT_HISTORY_KEY, clearChats, deleteChat, getChat, listChats, saveChat } from './chat-history.js';
+import { CHAT_HISTORY_KEY, clearChats, deleteChat, getChat, listChats, saveChat } from './chat/chat-history.js';
 import {
   canExplainImageDirectly,
   createUserTurn,
   DEFAULT_IMAGE_EXPLANATION,
   normalizeSelectionAttachment,
   requestConversation
-} from './chat-turn.js';
-import { assertPdfSize, extractPdfContext, fetchPdfBlob } from './pdf-context.js';
+} from './chat/chat-turn.js';
+import { assertPdfSize, extractPdfContext, fetchPdfBlob } from './pdf/pdf-context.js';
 import { clipboardImageFile, normalizeImageFile } from './image-input.js';
 import { currentSelectionCapture } from './page-capture.js';
 import { renderMarkdown, renderReasoning, renderActivity, addActivity, bindActivityDisclosure } from './render.js';
-import { buildResponseLayerContext } from './response-layers.js';
-import { prepareEditedResend, replaceConversationPrefix } from './chat-edit.js';
+import { buildResponseLayerContext } from './chat/response-layers.js';
+import { prepareEditedResend, replaceConversationPrefix } from './chat/chat-edit.js';
 import {
   MAX_CHAT_SEARCH_RESULTS,
   matchingMessageIndexes,
   movedSearchIndex,
   searchRanges
-} from './chat-search.js';
-import { dedicatedChatId, dedicatedChatUrl } from './chat-page.js';
+} from './chat/chat-search.js';
+import { dedicatedChatId, dedicatedChatUrl } from './chat/chat-page.js';
 import { sendRuntimeMessage as sendPanelMessage } from './runtime-message.js';
 import { parseModelChoice, populateModelSelect } from './model-select.js';
 import { RECENT_MODELS_KEY } from '../../../packages/core/src/recent-models.js';

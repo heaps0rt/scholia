@@ -124,5 +124,5 @@ npm run smoke:macos:workspace
 Fixtures cover attempts, revisions, hints, disputes, source changes, restart,
 concurrent writers, scheduling, and delayed feedback. The full smoke also checks
 the local website in Chromium. These tests use deterministic providers; live
-model quality still needs separate evaluation. See [Contributing](../CONTRIBUTING.md)
+model quality still needs separate evaluation. See [Contributing](CONTRIBUTING.md)
 for the rest of the checks.

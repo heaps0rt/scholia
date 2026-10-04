@@ -3,7 +3,7 @@ import { readFile, stat } from 'node:fs/promises';
 import { resolve, extname, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { AccountStore } from './store.js';
-import { Documents, documentMime } from './documents.js';
+import { Documents, documentMime } from './documents/documents.js';
 import { Workspaces } from './workspaces.js';
 const source = dirname(fileURLToPath(import.meta.url));
 const types = {
