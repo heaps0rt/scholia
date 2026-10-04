@@ -191,7 +191,7 @@ export const PROVIDERS = Object.freeze([
       startScheme: 'claudecode',
       startPortParameter: 'port',
       command: 'node scripts/claude-code-bridge.mjs',
-      installCommand: 'node scripts/install-claude-handler.mjs'
+      installCommand: 'npm run bridge:install:claude'
     }
   },
   {
@@ -225,7 +225,7 @@ export const PROVIDERS = Object.freeze([
       healthField: 'ok',
       startScheme: 'scholia-codex',
       command: 'node scripts/codex-bridge.mjs',
-      installCommand: 'node scripts/install-codex-handler.mjs'
+      installCommand: 'npm run bridge:install:codex'
     }
   },
   {
@@ -257,7 +257,7 @@ export const PROVIDERS = Object.freeze([
       healthField: 'healthy',
       startScheme: 'opencode',
       command: 'opencode serve',
-      installCommand: 'node scripts/install-opencode-handler.mjs'
+      installCommand: 'npm run bridge:install:opencode'
     }
   },
   {

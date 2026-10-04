@@ -1,277 +1,215 @@
 # Chrome extension
 
-The Chrome app is built from `apps/chrome` plus `packages/core`.
+Scholia explains selected text, mathematics, images, pages, and PDFs using the
+provider you configure. Conversations and settings stay in extension storage.
+
+## Install from source
+
+From the repository root, using Node.js 24 or newer:
 
 ```sh
-npm install
+npm ci
 npm run build
 ```
 
-Load `dist/chrome` as an unpacked extension. Do not load `apps/chrome`
-directly: the production directory contains bundled JavaScript and local KaTeX
-assets required by Manifest V3.
+In `chrome://extensions`, enable **Developer mode**, choose **Load unpacked**,
+and select `dist/chrome`. Open Scholia's settings to choose a provider.
+`apps/chrome` is source code; it cannot be loaded directly.
 
-Each local build stamps `dist/chrome/manifest.json` with a fresh Chrome-valid
-version that Chromium displays directly, so rebuild before reloading the
-unpacked extension. Release builds can set an explicit version with
-`SCHOLIA_EXTENSION_VERSION=1.2.3 npm run build`.
+Rebuild and reload the extension after changes. Local builds receive a fresh
+Chrome-valid version. For a specific version:
 
-Run `node scripts/smoke-chromium-region.mjs` after building to verify direct
-page/PDF region selection, Retina cropping, and cancellation in Chromium.
+```sh
+SCHOLIA_EXTENSION_VERSION=1.2.3 npm run build
+```
 
-Every assistant response—inside the page popup, layered explanations, sidebar,
-and separate response chat—uses the same CommonMark/GFM renderer. It supports
-nested and task lists, headings, block quotes, safe links, tables, KaTeX math,
-hard breaks, inline code, and distinctly bordered fenced code with language-aware
-highlighting and a Copy button. Raw HTML is shown as text, active URL schemes are rejected, and
-model-authored remote images are represented without fetching them. Provider-
-returned reasoning or reasoning summaries appear in a separate collapsed
-panel, and no panel is rendered when the response contains none.
+## Selections and chat
 
-## Gestures
+Select text and click **Explain**. Click a MathJax expression to select its
+source, or Alt-click to choose a symbol and adjust it with **Narrower/Wider**.
+Shift-Alt-click or **+ symbol** adds more symbols. LaTeX selections in Overleaf's
+editor also work.
 
-- Toolbar side panel: ask questions grounded in the current page or complete
-  PDF, then continue the conversation without leaving the source.
-- Toolbar icon: open an independent, streaming Quick Chat inside the pinned
-  extension popup, plus current-site access, quick selection/capture actions,
-  model/Fast mode controls, and saved-chat management. It does not open the
-  sidebar; **Open sidebar** remains a separate explicit action.
-- Sidebar chat: use **Home** to return without discarding the conversation, or
-  **New chat** to reset it. Model and Codex/Claude Code Fast mode can be changed
-  both on sidebar home and directly above an active chat. **Compact context**
-  reads the page beside the sidebar, ranks page/PDF/course/site and saved
-  ChatGPT reference text locally, and limits the source
-  pack to about 6,000 characters. **Full** uses the larger previous context
-  budget (up to about 24,000 characters); **None** sends only the conversation
-  plus text or images you attach. The choice is saved with the chat. In every
-  extension message composer, Enter sends and Shift+Enter inserts a new line.
-  Use the search button
-  or `Command+F` / `Ctrl+F` to find messages in the active conversation;
-  `Enter` and `Shift+Enter` move between results.
-- Use the expand button in a completed sidebar chat to open the same saved
-  conversation in the extension-owned `chat.html` tab. The full-page view adds
-  a persistent recent-chat rail and a wider reading column while retaining the
-  sidebar's source context, model controls, streaming, search, edit/resend,
-  attachments, rendered math, tables, and recursive response explanations.
-- Use **Move to chat ↗** in a page explanation or response explanation popup
-  to continue it in a full-page chat, or in that PDF's own sidebar when using
-  the PDF reader. Each embedded PDF sidebar keeps its conversation and source
-  tied to its containing tab rather than following other windows or global
-  Quick Chat navigation. The saved chat retains the transcript,
-  selected source, parent explanation context, and drafted follow-up. Wait for
-  a response to finish or stop it before moving; the popup closes only after
-  the chat opens successfully, returning to the parent explanation when nested.
-- Source cards show the detected document language. In **Auto**, Scholia detects
-  it from the bounded page, email-thread, or extracted-PDF text instead of
-  assuming that every non-Norwegian document is English; a reliable text result
-  can correct stale HTML language metadata or the browser locale.
-- Completed sidebar turns are kept in bounded extension-local history. Recent
-  chats can be reopened or deleted from either surface; oversized source images
-  are not retained. An open sidebar and dedicated tab synchronize newer saved
-  turns rather than maintaining divergent transcript copies.
-- A text selection on the source page is mirrored into the side panel as both
-  the active source excerpt and a removable composer attachment. If a chat is
-  already underway, the selection is attached to the next turn without
-  changing the chat's fixed source context. With OpenAI, Anthropic, OpenRouter,
-  or the local Codex bridge selected, enable **Web search** on the selection
-  prompt or chat controls to search current public sources for that turn;
-  returned citations are rendered as clickable source links.
-- Select text inside any side-panel assistant response to open an anchored
-  Explain prompt. Submitting it opens a separate explanation layer with its own
-  follow-ups instead of inserting a turn into the parent chat. Text in that
-  generated answer can be selected again to create another layer without a
-  depth limit; Back unwinds one layer at a time, and every layer retains its own
-  scroll position. Settings can import an editable memory/project snapshot from
-  a visible signed-in ChatGPT tab. **Get full memory from ChatGPT** opens a
-  dedicated canonical Personalization tab, presses Memory summary → Manage, and reads
-  only the rendered memory manager after generation finishes and the text has
-  stabilized. It closes that temporary tab and returns to Settings on success;
-  on failure it leaves the tab visible for sign-in or troubleshooting without
-  navigating an existing conversation. Imported memory is used automatically for Scholia requests on
-  `chatgpt.com`; saved project context is added only for the matching project.
-  Quick Chat can optionally refresh through a temporary inactive ChatGPT tab
-  on a recurring 3-hour, 12-hour, 1-day, 3-day, or 7-day schedule, close that
-  tab, and include the latest locally saved snapshot in its first question. If
-  Chrome missed a scheduled run, Quick Chat uses the saved snapshot immediately
-  and catches up in the background instead of delaying the prompt.
-  Elsewhere, the response Explain prompt offers a per-request toggle. Scholia
-  never reads ChatGPT cookies or private account endpoints.
-- User messages in the sidebar, separate response layers, and in-page
-  explanation layers expose **Edit**. Resending an edit keeps the earlier
-  transcript, discards later turns that depended on the old wording, and
-  regenerates from the changed message.
-- The side-panel **Entire site** toggle explicitly follows same-origin links,
-  reads up to 48 HTML pages, and searches the resulting local index for each
-  initial question. The packed context remains fixed for follow-ups.
-- The side-panel **Complete page** toggle scrolls through the current document
-  to trigger lazy content, reads live semantic text plus accessible embedded
-  documents and open shadow content, captures a bounded full-page visual for
-  image-capable models, and restores the original scroll position. Very long or
-  unbounded pages are explicitly marked as visually sampled.
-- Ordinary page questions index live rendered and dynamically inserted text,
-  useful image labels, accessible embedded content, and a bounded, sanitized DOM
-  HTML snapshot. Scripts, styles, event handlers, live form values, Scholia's UI,
-  and large inline data URLs are omitted before relevance packing.
-- In supported webmail readers, selecting a passage changes the pill to **Draft
-  reply**. Scholia extracts only the surrounding conversation (including visible
-  sender, recipient, date, and attachment-name metadata), uses it as private
-  reference context, and drafts a ready-to-send response in the thread's tone
-  and language. It never presses the mail client's Send button.
-- Select text: use the small Explain pill; click anywhere outside it to dismiss.
-- Open a PDF: on Chromium 151 and newer, Scholia handles Chrome's existing PDF
-  stream in place, keeping the original HTTP(S) or `file://` navigation in the
-  address bar while the selectable reader is active. Older Chromium builds use
-  the extension-owned compatibility view after the PDF navigation completes.
-  Automatic opening is enabled in every supported browser, including Brave.
-  PDFs opened from Finder, dragged into a browser tab, or opened with the
-  browser's Open File command use Scholia's reader too.
-  Repository preview pages first resolve through their raw PDF address. Mark
-  text to show the ordinary Explain pill in place. Selection/mark drafts are
-  keyed to that viewer tab, so marking one open PDF cannot appear in another
-  PDF tab, and they are cleared when that tab loads a replacement document.
-  **Chat with PDF** opens a floating in-reader chat with locally extracted,
-  page-numbered context. Chat mounts directly into the reader's document in all
-  browsers, including Brave. Its isolated styles and controller avoid nested
-  extension-frame navigation, which affected Brave builds block, while keeping
-  each PDF tab's conversation independent. Use the viewer's
-  search button or `Command+F` / `Ctrl+F` and choose **Exact** for literal
-  phrases or **Semantic** for locally ranked concepts and natural-language
-  questions. `Enter` and `Shift+Enter` move through highlighted results. The
-  view button offers **Continuous**, **Single page**, and **Two-page spread**
-  layouts alongside **Automatic**, **Fit page**, and **Fit width** sizing; both
-  choices persist between PDFs. Left/Right move to the previous or next page,
-  or by a complete spread in two-page view, while Up/Down scroll by a line.
-  Page Up/Down and Space/Shift+Space
-  scroll by a viewport; Home/End jump to the document edges; and `Command`/`Ctrl`
-  with +, −, or 0 controls PDF zoom. The
-  printer button (or `Command+P` / `Ctrl+P`) prepares every page at print
-  resolution—including pages outside the lazy render cache—and then opens
-  Chrome's native print preview. The viewer opens external DOI/publisher links
-  in a new tab, follows internal
-  page and named-destination links in place, and resolves relative links from
-  the actual downloaded PDF address. Repository preview links from GitHub,
-  GitLab, and Bitbucket are resolved to their raw document, and bounded HTML
-  preview pages can supply an embedded or explicit download URL. It shows the
-  sanitized original page address and has a persistent
-  light/dark interface control that never recolors the PDF pages themselves.
-  The toolbar shows distinct rendering, page-preparation, text-indexing, and
-  local-cache progress; the first visible page is painted before background
-  indexing begins.
-  **Chrome view** returns to the built-in viewer; the toolbar menu's **Open
-  Scholia PDF view** button restores the selectable view.
-- The toolbar menu also offers **Open a PDF file or address** at any time. HTTP,
-  HTTPS, and file addresses open in a new Scholia reader tab, and a local file
-  can be chosen from that tab. On Chromium 151 and newer, Scholia handles the
-  browser's PDF stream in place, so the active reader and restored tab keep the
-  original HTTP(S) or `file://` address in the address bar. Existing opaque
-  reader links migrate back to their saved original address after an extension
-  reload. Older Chromium versions keep the extension-URL reader as a
-  compatibility fallback. A PDF selected with the
-  Chromium file picker keeps a revocable handle to that file—not a copy of its
-  bytes—so its reader tab can reopen the same file from disk after a restart.
-  Chromium may ask you to allow read access again. Transient blob/data sources
-  and the legacy file-input fallback remain session-only.
-- Selecting LaTeX inside Overleaf's CodeMirror editor shows the ordinary
-  Scholia Explain affordance while selections in other editable fields remain
-  ignored.
-- Click MathJax: select its whole source expression.
-- Option/Alt-click MathJax: choose the exact symbol, then use Narrower/Wider.
-- Shift+Alt-click, or press **+ symbol**, to select several math symbols.
-- Select text or mathematics inside an assistant answer to explain it in a new
-  layer. Parent explanations remain fully rendered behind the active panel and
-  available as context; Back returns to the previous layer.
-- Press ⊘ in the in-page popup to disable Scholia for that website; re-enable
-  it from the compact toolbar menu or sidebar.
-- Settings can switch website access to allowlist mode; the toolbar then adds
-  or removes the current website from the whitelist.
-- `Command+Shift+E` / `Ctrl+Shift+E`: explain the current selection.
-- `Command+Shift+S` / `Ctrl+Shift+S`: capture a visible region. Region questions
-  retain the current page context; in Scholia's PDF viewer that includes the
-  locally extracted, page-numbered PDF text.
-- `Command+Shift+K` / `Ctrl+Shift+K`: open a fresh Quick Chat in the sidebar, or close it when it is already open.
-  Extension settings show the active Region and Quick Chat bindings and link to
-  Chrome's shortcut editor for remapping them. On ordinary pages, Scholia also
-  handles this key in-page when Chrome has left the extension command unassigned.
-- If the native Scholia macOS app is also installed, its active-app menu offers
-  separate Selection Explain and screen-region switches. Hand off only the
-  shortcut that the extension should own in that Chromium browser.
-- Use the image button in either composer to choose a local image, or paste an
-  image directly into the question field. In an active sidebar chat, chosen,
-  pasted, and region-captured images become editable attachment drafts, then
-  travel with the question as new user turns in that same chat;
-  from Home they open a new image-grounded conversation and keep any question
-  already typed.
-- Toolbar icon: open the compact Scholia menu.
+The toolbar icon opens Quick Chat, saved chats, and capture controls. **Open
+sidebar** opens a conversation beside the page. **Home** keeps the current chat;
+**New chat** starts another. Expand a completed sidebar chat into a full tab, or
+use **Move to chat ↗** to keep an explanation and its drafted follow-up.
 
-Chrome blocks content scripts on internal pages such as `chrome://settings`,
-the Chrome Web Store, and its built-in PDF viewer. PDFs are handled in Scholia's
-own selectable viewer and side panel. Region selection opens directly over the
-rendered page or PDF: drag to capture, or press Escape to cancel. The PDF chat
-hides during selection and returns afterward. Capture covers the visible page
-viewport, not content currently scrolled off-screen.
+Select part of an answer to ask for another explanation. Each layer keeps its
+own conversation; **Back** returns to the previous one. **Edit** on a sent
+question replaces that question and regenerates the later conversation.
 
-Links whose visible path ends in `.pdf` sometimes return an HTML preview rather
-than PDF bytes. Scholia follows standard raw-download response hints and common
-repository preview formats, verifies the PDF signature before parsing, and
-keeps **Open original page** available if no safe document download can be
-found.
+Enter sends a message; Shift-Enter adds a line. Use the chat search button or
+Command/Ctrl-F to find messages, then Enter or Shift-Enter to move through hits.
+Saved chats can be reopened or deleted from the toolbar or sidebar. History
+holds up to 24 recent chats subject to a storage-size limit.
 
-Scholia uses a standalone PDF reader because native extension MIME handling
-can crash the browser process. For local `file://` PDFs, enable
-**Allow access to file URLs** on Scholia's extension details page (for Brave:
-`brave://extensions` → Scholia → Details). This is a one-time browser permission
-that extensions cannot enable themselves. You can also use **Choose PDF
-file** when the panel asks. PDF text
-extraction, page mapping, and semantic relevance ranking all happen locally;
-only the bounded context pack is included in a provider request. Completed
-text indexes are cached in extension-local IndexedDB under a PDF.js document
-fingerprint, so reopening the same bytes can restore search and chat context
-without extracting every page again. PDFs up to 1 GB can be opened. Large
-chosen or downloaded PDFs are parsed through bounded local range reads to avoid
-keeping a second full-file copy in JavaScript memory, though indexing and
-rendering very large documents can still take substantial time.
-PDF.js image decoders are bundled with the extension, including the local
-WebAssembly path needed by JPEG 2000 and JBIG2-heavy scanned or illustrated
-documents. No decoder code is fetched remotely.
+| Shortcut             | Action                                   |
+| -------------------- | ---------------------------------------- |
+| Command/Ctrl-Shift-E | Explain the current selection            |
+| Command/Ctrl-Shift-S | Capture a visible region                 |
+| Command/Ctrl-Shift-K | Toggle a fresh Quick Chat in the sidebar |
 
-## Provider protocols
+Remap shortcuts at `chrome://extensions/shortcuts`. If the Mac app is installed,
+its per-app switches let you give the extension control of selection and region
+shortcuts in your browser.
 
-The worker has dedicated wire handling for Anthropic, Ollama, Cohere, and the
-native opencode session API. Its OpenAI-compatible path is used by OpenAI,
-GPT NTNU, OpenRouter, Groq, Together, Mistral, custom endpoints, and the local
-Codex and Claude Code bridges. GPT NTNU uses the IDUN endpoint and requires a
-personal API key plus an NTNU network or VPN connection. Fast mode maps to
-Codex's fast service tier and Claude Code's Fast setting. Local bridge health,
-usage, Codex image support, and
-optional Claude image support are discovered over loopback. Scholia also reads
-the live opencode provider catalog, keeps only connected and built-in providers,
-merges manually configured model IDs into every picker, and caches that compact
-list for ten minutes. Search popovers render at most 80 matching rows at once so
-even a large server catalog does not stall the extension UI.
-The exact-ID field remains available for models a server does not advertise.
+## Source context
 
-### Chat files and Canvas courses
+A chat keeps the source it started with. Selecting another passage during a
+conversation attaches it to the next turn without replacing that source.
 
-Every browser chat composer has an **Attach files** paperclip and accepts file
-drops and file paste. This includes sidebar, full-page, PDF-reader, toolbar, and
-selection explanation chats. Attach PDFs, images, DOCX, PPTX, XLSX, or readable
-text/code files. Files appear as removable previews and remain with their sent
-message when saved, reopened, or edited. Limits: six files, one image, 25 MB per
-file, 24,000 extracted characters per document and 48,000 per turn. Partial text
-is marked; unreadable, encrypted, or unsupported files show an error.
+- **Compact** ranks relevant page, PDF, course, or site text locally and sends
+  about 6,000 characters of automatic context.
+- **Full** allows a larger source pack, up to about 24,000 characters.
+- **None** omits automatic context and keeps your conversation and attachments.
 
-On a signed-in Canvas course page, automatic page context searches that course's
-syllabus, pages, assignments, and readable files, including module-only files.
-**Index / refresh course** builds or refreshes the local index; **Refresh course
-index** is also available during that chat. New questions reuse the index and
-check for changes once it is 15 minutes old. Unchanged documents are reused;
-changed and removed documents are reconciled on refresh. **Clear index** removes
-the current course's local index. None mode skips automatic course retrieval.
+**Complete page** scrolls to load content, gathers readable text and a bounded
+page visual, then restores your position. Very long pages may be sampled.
+**Entire site** follows up to 48 same-origin HTML pages and ranks their text for
+the first question. Follow-ups keep the resulting source pack.
 
-Indexes live in extension IndexedDB, separated by Canvas host, signed-in account,
-and course. Up to eight courses are retained, with 300 sources and two million
-text characters per course. Large, locked, or unsupported materials make the
-index partial; the context notice reports that limitation. Course API access and
-current account identity are verified before using cached content. Only ranked
-excerpts and source links are included in a model request; raw course downloads
-and signed download URLs are not stored in the index.
+Page capture removes scripts, event handlers, live form values, and Scholia's
+controls. In supported webmail readers, **Draft reply** uses the conversation
+around your selection. It writes a draft in Scholia; you send it yourself.
+
+**Web search** is available with supported OpenAI, Anthropic, OpenRouter, and
+Codex configurations. It uses the selected provider's search tool for that turn.
+Answers render Markdown, highlighted code, and math locally. Raw HTML, unsafe
+links, and remote images in answers are blocked. Provider-returned reasoning,
+when present, appears in a separate collapsed panel.
+
+### Files and Canvas
+
+Use the paperclip, drag files into a composer, or paste them. Supported inputs
+include PDFs, images, Office documents, and readable text/code. Limits are six
+files, one image, 25 MB per file, 24,000 extracted characters per document, and
+48,000 per turn. Partial extraction is labelled. Saved messages retain the
+extracted text and supported images, not raw document bytes.
+
+On a signed-in Canvas course page, **Index / refresh course** reads the syllabus,
+pages, assignments, and accessible files, including module files. New questions
+reuse the index and check for changes after 15 minutes. **Clear index** deletes
+that course's cache; **None** skips automatic course context.
+
+Indexes are separated by Canvas host, account, and course. The cache holds up to
+eight courses, with 300 sources and two million text characters per course.
+Access is checked before reuse. Locked or unsupported files make the index
+partial. Only relevant excerpts and source links reach the provider.
+
+### Optional ChatGPT context
+
+Settings can import a memory or project snapshot from a signed-in ChatGPT tab.
+**Get full memory from ChatGPT** opens a separate Personalization tab and reads
+the rendered memory manager. The snapshot remains editable in Settings.
+Scholia does not read cookies or private ChatGPT account endpoints.
+
+Imported memory can be included automatically on ChatGPT pages; project context
+is included only for a matching project. Response explanations also offer an
+explicit inclusion toggle. Quick Chat can refresh and include memory every
+chat, every 3 or 12 hours, or every 1, 3, or 7 days. **Manual only** disables that
+Quick Chat refresh and inclusion. A missed scheduled refresh runs in the
+background while the question uses the last saved snapshot.
+
+Imported text can reach a provider other than OpenAI if that is the provider you
+choose. See [Privacy](../../docs/PRIVACY.md) for storage and transmission details.
+
+## PDFs
+
+Open a PDF in the browser, or choose **Open a PDF file or address** in the
+toolbar. Scholia resolves common repository preview links to their raw download
+and checks the PDF signature before opening it. **Open original page** remains
+available if the document cannot be fetched.
+
+The reader supports selection explanations, **Chat with PDF**, exact and locally
+ranked semantic search, bookmarks, printing, and continuous, single-page, or
+spread layouts. Each PDF tab keeps its own selections and conversation. The
+viewer's light/dark setting leaves PDF page colors unchanged.
+
+Use Left/Right to change pages, Page Up/Down or Space/Shift-Space to scroll,
+Home/End for document edges, and Command/Ctrl with +, −, or 0 for zoom.
+Command/Ctrl-P prepares all pages and opens browser print preview.
+
+On Chromium 151 and newer, supported MIME handling keeps the original PDF
+address in the address bar. Older builds use an extension-owned reader URL.
+**Chrome view** returns to the built-in viewer; **Open Scholia PDF view** restores
+Scholia's reader. For local `file://` navigation, enable **Allow access to file
+URLs** in the extension's details, or choose the file in Scholia's picker.
+
+A file chosen through Chromium's picker can retain a revocable file handle so
+it can reopen after a restart. Blob/data URLs and the fallback file input last
+only for that session. PDF text indexes are cached locally by document
+fingerprint. Documents up to 1 GB are accepted, but large files can take time to
+index and render. PDF.js, its workers, fonts, and image decoders are bundled.
+
+Region capture covers the visible page or PDF viewport. Drag to select an area
+or press Escape to cancel. Browser internal pages and the Web Store restrict
+extension access.
+
+## Providers and site access
+
+Settings supports cloud APIs, Ollama, custom compatible endpoints, and local
+Codex, Claude Code, and opencode services. GPT NTNU needs a personal API key and
+an NTNU network or VPN connection. Fast mode uses the selected CLI's setting.
+Model catalogs can be searched; an exact-ID field is available for unlisted
+models.
+
+To install a macOS URL handler for a local bridge:
+
+```sh
+npm run bridge:install:codex
+npm run bridge:install:claude
+npm run bridge:install:opencode
+```
+
+Each accepts `-- --port N` or `-- --uninstall`. Node.js and the chosen CLI must
+be installed. To start Codex or Claude directly, use `npm run bridge:codex` or
+`npm run bridge:claude`; opencode uses `opencode serve --port 4096`.
+
+Disable Scholia for a site from the popup or toolbar. Allowlist mode keeps it
+inactive except on the hostnames you choose.
+
+## Testing and release
+
+Browser verification uses Chromium. After building:
+
+```sh
+node scripts/smoke-chromium-region.mjs
+node scripts/smoke-chromium-history.mjs
+npm run smoke:chromium:recursion
+```
+
+For a Web Store package:
+
+```sh
+npm run check
+npm run package:chrome
+```
+
+Upload `dist/scholia-chrome-<version>.zip`. Packaging uses the version in
+`package.json`, checks manifest entries and bundled dependencies, rejects remote
+or dynamically evaluated code, and verifies that the manifest is at the ZIP
+root. Update `package.json`, the lockfile, and the source manifest together when
+bumping the release version.
+
+The listing's single purpose is to explain user-selected text, mathematics,
+images, regions, pages, and PDFs with the user's chosen provider. Suggested
+short description: “Select text, math, or a screen region and get a contextual
+AI explanation.”
+
+| Permission       | Use                                                                        |
+| ---------------- | -------------------------------------------------------------------------- |
+| `activeTab`      | User-requested page reading and region capture                             |
+| `alarms`         | Optional scheduled ChatGPT memory refresh                                  |
+| `contextMenus`   | Explain and Capture commands                                               |
+| `clipboardWrite` | Copy code buttons                                                          |
+| `scripting`      | Connect the ChatGPT context probe to an already-open tab                   |
+| `storage`        | Settings, credentials, access rules, and saved chats                       |
+| `sidePanel`      | Contextual chat beside the page                                            |
+| `<all_urls>`     | Selection controls, requested page/PDF/site context, and provider requests |
+
+Before submitting, publish the [privacy policy](../../docs/PRIVACY.md), complete
+the store's privacy questionnaire to match extension behavior, provide toolbar
+and sidebar screenshots, and check the support URL. The extension has no
+analytics, advertising, or project-operated content backend. The separately
+hosted web app has a different data path, documented in the same policy.

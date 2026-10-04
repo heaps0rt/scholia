@@ -1,8 +1,7 @@
 # Study workspace
 
-The workspace keeps courses, documents, and tutor conversations together. It is
-available in the native Mac app, its optional local website, and the independent
-hosted web service. The local website shares the Mac's library; hosted accounts
+Keep courses, documents, and tutor conversations in a workspace. Use the Mac
+app, its local website, or a separately hosted account. The local website shares the Mac's library; hosted accounts
 have their own private libraries.
 
 ## Start reading
@@ -46,8 +45,7 @@ status; a saved badge reflects the last successful sync.
 
 Clicking an assignment opens its instructions and the first explicitly linked
 Canvas PDF in Scholia's reader. **Included files** lists every linked file;
-choose one to read it while keeping the assignment open. This includes readable
-simulation inputs and data such as `in.nanowire` and `Ni.eam`, as well as PDFs.
+choose one to read it while keeping the assignment open. Readable text and data files can be included alongside PDFs.
 Assignments without a linked PDF show their instructions and included files.
 Saved instructions and downloaded files remain available locally in the Mac app.
 A failed download offers Retry without discarding saved material.
@@ -95,8 +93,7 @@ during preloading. This setting is native; hosted web downloads when requested.
 
 Material access is read-only. API pagination stays on the Canvas origin, and
 file redirects lose Canvas tokens and cookies before reaching storage hosts.
-Course identity is scoped by Canvas host and account. Download catalogs are not
-represented as tutor-readable text until content has been saved and indexed.
+Course identity is scoped by Canvas host and account. The tutor can use a file only after its content has been downloaded and indexed.
 
 ## Reading and editing
 
@@ -138,8 +135,7 @@ spaced review queue.
 Native files, indexes, conversations, and reading positions are stored under
 `~/Library/Application Support/Scholia/Study`. Workspace removal removes its
 library entry while retaining imported files on disk for recovery. Native edit
-drafts and revisions are also local. Hosted data is stored on the service's
-persistent volume. See [Privacy](PRIVACY.md) for retention and operator access.
+drafts and revisions are also local. Hosted data stays on the server's persistent volume. See [Privacy](PRIVACY.md) for retention and operator access.
 
 ## Open in Browser
 
@@ -153,17 +149,15 @@ For a website that stays available without the Mac, use the separate account
 service described in [Hosting](HOSTING.md). It has its own data and sessions;
 it does not expose or synchronize your Mac library.
 
-## Verification
+## Troubleshooting
 
-```sh
-npm run check
-npm run smoke:macos:workspace -- --data-only
-npm run smoke:macos:workspace -- --learning-only
-npm run smoke:macos:workspace -- --assignments-preview --assignment-page-smoke
-npm run build:web
-node scripts/smoke-hosted-web.mjs
-```
+- **A Canvas file won't open:** refresh your Canvas connection, then retry the
+  download. Saved material remains available after a failed request.
+- **The tutor cannot read a scanned page:** native OCR may help; hosted indexing
+  requires existing PDF text. Attach a figure to ask an image-capable model.
+- **A browser edit conflicts:** keep the draft, return to the original document,
+  and reload its current revision before saving again.
+- **The local website stops responding:** keep the Mac app running and reopen
+  it with **Open in Browser**. Hosted accounts use their own server instead.
 
-Native smoke checks use temporary libraries and deterministic Canvas/provider
-fixtures. Browser checks use Chromium. See [Mac setup](../apps/macos/README.md)
-if the installed Command Line Tools need an explicit SDK selection.
+For development and smoke-test commands, see [Contributing](../CONTRIBUTING.md).

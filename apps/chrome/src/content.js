@@ -1,3 +1,4 @@
+import { createHtmlElement, isolateUiInputEvents, isQuickChatShortcut } from './ui-primitives.js';
 import { copyCodeBlock, copyText } from './clipboard.js';
 import { isCanvasCoursePage, canvasCourseFromUrl } from './canvas-course.js';
 import fileStyles from '../file-attachments.css';
@@ -22,14 +23,11 @@ import { renderMarkdown, renderReasoning } from './render.js';
 import { sendRuntimeMessage as extensionMessage } from './runtime-message.js';
 import { bridgeLaunchDecision } from './bridge-launch.js';
 import { formatUsageRemaining } from './usage.js';
-import { createHtmlElement } from './html-elements.js';
 import { clipboardImageFile, normalizeImageFile } from './image-input.js';
-import { isolateUiInputEvents } from './ui-event-boundary.js';
 import { prepareEditedResend, replaceConversationPrefix } from './chat-edit.js';
 import { canExplainImageDirectly, DEFAULT_IMAGE_EXPLANATION, createUserTurn, requestConversation } from './chat-turn.js';
 import { selectionContextForQuestion } from './selection-context.js';
 import { detectDocumentLanguage, documentLanguageLabel } from './document-language.js';
-import { isQuickChatShortcut } from './keyboard-shortcuts.js';
 import { crawlSite, siteLinksFromDocument } from './site-context.js';
 import {
   finishDeepPageCapture,

@@ -3,12 +3,13 @@
 The hosted service runs independently of the Mac app. Each account has private
 workspaces, files, conversations, provider credentials, and a Canvas connection.
 Accounts on this service do not synchronize with native or extension libraries.
-The repository supplies the service and container definition; it does not
-provision a cloud server, domain, or TLS certificate.
+You supply the server, domain, and TLS certificate; this repository supplies
+the application and Docker image definition.
 
 Use Node.js 24 or newer and one service process with persistent local storage.
 SQLite and in-memory task coordination currently assume a single instance.
-Horizontal replicas and shared-network-filesystem deployments are not supported.
+Run one instance against local storage. Do not share the database between
+replicas or place it on a network filesystem.
 
 ## Run locally
 
@@ -72,8 +73,7 @@ docker exec -i scholia node scripts/web-user.mjs \
   --email you@example.com < /secure/path/scholia-password.txt
 ```
 
-Remove the temporary password file securely according to your secret-management
-policy. Sign in through the HTTPS origin, open account settings to configure a
+Remove the temporary password file when you are done. Sign in through the HTTPS origin, open account settings to configure a
 provider and API key, and connect your own Canvas token if needed.
 
 A minimal Nginx proxy configuration looks like this; supply your own certificate
@@ -164,11 +164,9 @@ not hosted features.
 Imports are limited to 100 MB per file. Document indexing uses bounded worker
 threads and timeouts; accounts also have storage and collection limits. Large
 or scanned documents may have incomplete searchable text even when their
-original PDF can be displayed. This is a small-service deployment model, not a
-claim of unlimited concurrency. Monitor memory, disk usage, backups, and failed
-requests as usage grows.
+original PDF can be displayed. Monitor memory, disk usage, backups, and failed requests as usage grows.
 
-Run the checks before deployment:
+Before deployment, run the service tests and Chromium smoke:
 
 ```sh
 npm run check
@@ -179,4 +177,5 @@ node scripts/smoke-hosted-web.mjs
 The hosted integration tests check account separation and revision conflicts;
 the Chromium smoke checks sign-in, imports, chat, settings, sign-out, and another
 account's empty workspace. CI also builds the Docker image and checks the running
-container's health endpoint. These checks need no live Canvas or model account.
+container's health endpoint. These checks use fixtures, so no live Canvas or model account is needed. See
+[Contributing](../CONTRIBUTING.md) for the other development checks.

@@ -755,7 +755,7 @@ test('a cold Codex bridge supplies a Scholia-specific launcher and recovers on t
     const offline = await checkBridgeStatus('codex', mergeSettings());
     assert.equal(offline.up, false);
     assert.equal(offline.startUrl, 'scholia-codex://start');
-    assert.match(offline.installCommand, /install-codex-handler/);
+    assert.match(offline.installCommand, /bridge:install:codex/);
     running = true;
     const online = await checkBridgeStatus('codex', mergeSettings());
     assert.equal(online.up, true);

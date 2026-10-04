@@ -1,47 +1,37 @@
 # Scholia
 
-Scholia keeps your reading beside a tutor conversation. Open a PDF, select a
-passage or figure, and ask a question with the source still in view. Organize
-readings into workspaces or connect Canvas to browse courses and assignments.
+Read a document and ask questions beside it. Scholia combines a reader, a tutor
+conversation, and a library of course materials. You choose the AI provider.
 
-There are three clients:
+| Client           | What it does                                                                            | Setup                              |
+| ---------------- | --------------------------------------------------------------------------------------- | ---------------------------------- |
+| macOS            | Native reader, Canvas courses, local OCR, practice and review, and a menu-bar companion | [Mac app](apps/macos/README.md)    |
+| Web              | Browser workspace served by the Mac app or an independent account server                | [Hosting](docs/HOSTING.md)         |
+| Chrome extension | Explain selections, mathematics, pages, and PDFs as you browse                          | [Extension](apps/chrome/README.md) |
 
-- **macOS:** a native SwiftUI and AppKit workspace with PDFKit, local OCR,
-  document editing, practice and review, and a menu-bar companion for questions
-  from other apps. Files and credentials stay on your Mac.
-- **Web:** the same reading interface, backed either by the Mac app's optional
-  loopback server or by an independent hosted service. Hosted accounts have
-  private workspaces, their own Canvas connection, and their own provider keys.
-- **Chrome extension:** explain selected text, mathematics, pages, and PDFs in
-  a popup, side panel, or full-tab conversation. Its history stays in extension
-  storage.
+The Mac app and its local website share a library. Hosted accounts and the
+extension have separate storage; there is no automatic sync between them.
 
-These libraries are separate. The Mac app and its local website share data;
-there is no automatic sync with a hosted account or the extension.
+## Quick start
 
-## Get started
-
-Use Node.js 24 or newer (`.nvmrc`), then install dependencies:
+Install Node.js 24 or newer (see `.nvmrc`), then run these commands from the
+repository root:
 
 ```sh
 npm ci
 ```
 
-### macOS
-
-Requires macOS 14 or newer and Apple's developer tools.
+**macOS** requires macOS 14 or newer and Apple's developer tools:
 
 ```sh
 npm run build:macos
 npm run install:macos -- --launch
 ```
 
-Choose a provider in Settings and test a model. Create a workspace, import a
-file, or connect Canvas. See the [Mac setup guide](apps/macos/README.md) for
-signing and permissions and the [workspace guide](docs/STUDY_WORKSPACE.md) for
-reading, assignments, and course downloads.
+Choose a provider in Settings, test a model, and import a file or connect Canvas.
+The [Mac guide](apps/macos/README.md) covers signing and permissions.
 
-### Hosted web
+**Hosted web:**
 
 ```sh
 npm run build:web
@@ -49,51 +39,40 @@ npm run web:user -- --email you@example.com
 npm run start:web
 ```
 
-The account command reads a password from standard input. The development
-service opens at `http://127.0.0.1:3000`. For a separate server, use HTTPS and
-persistent storage; [hosting instructions](docs/HOSTING.md) include Docker,
-account administration, backups, and deployment limits.
+Enter a password when prompted, then open `http://127.0.0.1:3000`.
+For deployment, follow the [hosting guide](docs/HOSTING.md).
 
-### Chrome extension
+**Chrome extension:**
 
 ```sh
 npm run build
 ```
 
 Open `chrome://extensions`, enable **Developer mode**, choose **Load unpacked**,
-and select `dist/chrome`. Configure a provider in Scholia's settings. See the
-[extension guide](apps/chrome/README.md) for shortcuts, PDF reading, site access,
-and local provider bridges.
+and select `dist/chrome`. Set up a provider in the extension's settings.
 
-## Providers and privacy
+## Guides
 
-The native app and extension support hosted providers, Ollama, custom compatible
-endpoints, and local Codex, Claude Code, and opencode bridges. The hosted service
-supports its configured cloud providers; local bridges remain on your Mac.
-Provider requests include your question and bounded source context. Selected
-text, page references, and supplied images remain visible in the conversation.
+- [Study workspace](docs/STUDY_WORKSPACE.md): reading, Canvas, assignments, and editing.
+- [Practice and review](docs/PRACTICE.md): questions, feedback, and review scheduling.
+- [Extension guide](apps/chrome/README.md): shortcuts, PDF reading, providers, and releases.
+- [Architecture](docs/ARCHITECTURE.md): code layout and runtime boundaries.
+- [Contributing](CONTRIBUTING.md): development commands, tests, and pull requests.
+- [Privacy](docs/PRIVACY.md): what is stored and what reaches a provider.
 
-Scholia includes no analytics or telemetry. Native and extension requests go
-directly to the selected provider. With hosted web, files, conversations, and
-credentials are stored on the server you use; that server sends provider
-requests on your behalf. Its operator can access stored data. See the
-[privacy policy](docs/PRIVACY.md) for storage, permissions, and retention.
+Scholia has no analytics or telemetry. The Mac app and extension send requests
+to your selected provider. Hosted web sends them through your server, whose
+operator can access stored files, conversations, and credentials.
 
 ## Development
 
 ```sh
-npm run check           # JavaScript tests, syntax checks, and Swift parsing
-npm run build:web       # website assets in dist/web
-npm run build           # extension in dist/chrome
-npm run check:dist      # validate the extension package
-npm run package:chrome  # Web Store ZIP
-npm run smoke:macos:workspace -- --data-only
-node scripts/smoke-hosted-web.mjs
+npm run check          # JavaScript tests and JS, JSON, and Swift syntax checks
+npm run build:web      # dist/web
+npm run package:chrome # validated extension ZIP in dist/
 ```
 
-Browser verification uses Chromium. See [architecture](docs/ARCHITECTURE.md)
-for component boundaries, [practice and review](docs/PRACTICE.md) for the native
-learning model, and [Chrome release instructions](docs/CHROME_WEB_STORE.md) for
-packaging. Generated output belongs in ignored build directories.
+Browser tests use Chromium. Build output and private data are ignored by Git.
+See [Contributing](CONTRIBUTING.md) for the full verification commands.
 
 [MIT license](LICENSE)

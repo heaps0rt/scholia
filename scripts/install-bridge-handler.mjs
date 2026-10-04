@@ -1,3 +1,4 @@
+#!/usr/bin/env node
 import { execFileSync } from 'node:child_process';
 import {
   chmodSync,
@@ -6,15 +7,70 @@ import {
   mkdirSync,
   mkdtempSync,
   rmSync,
-  writeFileSync
+  writeFileSync,
 } from 'node:fs';
 import { homedir, tmpdir } from 'node:os';
-import { basename, join } from 'node:path';
+import { basename, dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
+
+const scripts = dirname(fileURLToPath(import.meta.url));
+const handlers = {
+  codex: {
+    scriptName: 'install-bridge-handler.mjs codex',
+    displayName: 'Scholia Codex Bridge',
+    appName: 'Scholia Codex Bridge.app',
+    bundleId: 'app.scholia.codexbridge',
+    scheme: 'scholia-codex',
+    defaultPort: 8789,
+    binary: 'codex',
+    launcher: join(scripts, 'start-codex-bridge.command'),
+    environmentFile: join(scripts, '.codex-bridge-env'),
+    directCommand: 'node scripts/codex-bridge.mjs --port 8789',
+    environment: ({ nodePath, binaryPath, port }) => ({
+      NODE: nodePath,
+      CODEX: binaryPath,
+      PORT: port,
+    }),
+  },
+  claude: {
+    scriptName: 'install-bridge-handler.mjs claude',
+    displayName: 'Scholia Claude Bridge',
+    appName: 'ScholiaClaudeBridge.app',
+    bundleId: 'app.scholia.claudecodebridge',
+    scheme: 'claudecode',
+    defaultPort: 8787,
+    binary: 'claude',
+    launcher: join(scripts, 'start-claude-bridge.command'),
+    environmentFile: join(scripts, '.claude-bridge-env'),
+    directCommand: 'node scripts/claude-code-bridge.mjs --port 8787',
+    environment: ({ nodePath, binaryPath, port }) => ({
+      BRIDGE_NODE: nodePath,
+      BRIDGE_CLAUDE: binaryPath,
+      BRIDGE_PORT: port,
+    }),
+  },
+  opencode: {
+    scriptName: 'install-bridge-handler.mjs opencode',
+    displayName: 'Scholia opencode Launcher',
+    appName: 'ScholiaOpencodeLauncher.app',
+    bundleId: 'app.scholia.opencodelauncher',
+    scheme: 'opencode',
+    defaultPort: 4096,
+    binary: 'opencode',
+    launcher: join(scripts, 'start-opencode.command'),
+    environmentFile: join(scripts, '.opencode-env'),
+    directCommand: 'opencode serve --port 4096',
+    environment: ({ binaryPath, port }) => ({
+      OPENCODE_BIN: binaryPath,
+      OPENCODE_PORT: port,
+    }),
+  },
+};
 
 const PLIST_BUDDY = '/usr/libexec/PlistBuddy';
 const LAUNCH_SERVICES = [
   '/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister',
-  '/System/Library/Frameworks/CoreServices.framework/Versions/A/Frameworks/LaunchServices.framework/Versions/A/Support/lsregister'
+  '/System/Library/Frameworks/CoreServices.framework/Versions/A/Frameworks/LaunchServices.framework/Versions/A/Support/lsregister',
 ];
 
 function parseArguments(argv, defaultPort) {
@@ -76,9 +132,11 @@ function shellQuote(value) {
 }
 
 function environmentFile(values) {
-  return Object.entries(values)
-    .map(([name, value]) => `${name}=${shellQuote(value)}`)
-    .join('\n') + '\n';
+  return (
+    Object.entries(values)
+      .map(([name, value]) => `${name}=${shellQuote(value)}`)
+      .join('\n') + '\n'
+  );
 }
 
 function compileHandler(config, targetPath) {
@@ -98,7 +156,7 @@ function compileHandler(config, targetPath) {
     'on run',
     '  launchService()',
     'end run',
-    ''
+    '',
   ].join('\n');
 
   try {
@@ -124,16 +182,18 @@ function compileHandler(config, targetPath) {
   }
 }
 
-export function runMacUrlHandlerInstaller(config) {
+function runMacUrlHandlerInstaller(config, argv) {
   try {
-    const options = parseArguments(process.argv.slice(2), config.defaultPort);
+    const options = parseArguments(argv, config.defaultPort);
     const usage = `node scripts/${config.scriptName} [--port N] [--uninstall]`;
     if (options.help) {
       console.log(`Usage: ${usage}`);
       return;
     }
     if (process.platform !== 'darwin') {
-      throw new Error(`This installer supports macOS only. Start the service directly with: ${config.directCommand}`);
+      throw new Error(
+        `This installer supports macOS only. Start the service directly with: ${config.directCommand}`
+      );
     }
 
     const appPath = join(homedir(), 'Applications', config.appName);
@@ -150,18 +210,22 @@ export function runMacUrlHandlerInstaller(config) {
 
     const binaryPath = findExecutable(config.binary);
     if (!binaryPath) {
-      console.warn(`${config.binary} was not found on PATH. The launcher will probe common locations.`);
+      console.warn(
+        `${config.binary} was not found on PATH. The launcher will probe common locations.`
+      );
     }
 
     compileHandler(config, appPath);
     chmodSync(config.launcher, 0o755);
     writeFileSync(
       config.environmentFile,
-      environmentFile(config.environment({
-        binaryPath: binaryPath || config.binary,
-        nodePath: process.execPath,
-        port: options.port
-      })),
+      environmentFile(
+        config.environment({
+          binaryPath: binaryPath || config.binary,
+          nodePath: process.execPath,
+          port: options.port,
+        })
+      ),
       { mode: 0o600 }
     );
     launchServices(['-f', appPath]);
@@ -174,4 +238,16 @@ export function runMacUrlHandlerInstaller(config) {
     console.error(error.message);
     process.exitCode = 1;
   }
+}
+
+const [provider, ...args] = process.argv.slice(2);
+if (provider === '--help' || provider === '-h') {
+  console.log(
+    'Usage: node scripts/install-bridge-handler.mjs <codex|claude|opencode> [--port N] [--uninstall]'
+  );
+} else if (!Object.hasOwn(handlers, provider)) {
+  console.error('Choose a bridge: codex, claude, or opencode. Use --help for usage.');
+  process.exitCode = 1;
+} else {
+  runMacUrlHandlerInstaller(handlers[provider], args);
 }
