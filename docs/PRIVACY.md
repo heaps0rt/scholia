@@ -1,8 +1,6 @@
 # Scholia privacy policy
 
-**Effective date:** 27 September 2026
-
-**Documentation updated:** 4 October 2026
+**Effective date:** 4 October 2026
 
 Scholia has no analytics, advertising, or telemetry. It handles the material you
 choose to read or explain. Where that data is stored depends on the client:
