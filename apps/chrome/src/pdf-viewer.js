@@ -60,6 +60,7 @@ import {
 import { sendRuntimeMessage as message } from './runtime-message.js';
 import { pdfSourceStorageKey, pdfViewerSourceId } from './tab-context.js';
 import { pdfSelectionMetadata, pdfSelectionPages } from './pdf-selection-context.js';
+import { createPdfOcrReader } from './pdf-ocr.js';
 
 const BASE_SCALE = 1.2;
 const PDF_CSS_UNITS = 96 / 72;
@@ -162,6 +163,9 @@ let activeMimeStreamInfo = null;
 let metadataPromise;
 let resolveMetadata;
 let readyMetadata = null;
+let pdfOcrReader = null;
+let pdfOcrController = null;
+window.addEventListener('pagehide', () => pdfOcrController?.abort());
 
 function resetMetadata() {
   readyMetadata = null;
@@ -174,6 +178,7 @@ function resetMetadata() {
 globalThis.__scholiaGetPageMetadata = async (options = {}) => {
   if (!options.forSelection || !pdf) return metadataPromise;
   const documentProxy = pdf;
+  const ocrReader = pdfOcrReader;
   const generation = loadGeneration;
   let fallbackPage = currentPageState?.pageNumber || 1;
   if (options.rect) {
@@ -190,20 +195,21 @@ globalThis.__scholiaGetPageMetadata = async (options = {}) => {
     pageCount: documentProxy.numPages,
     selectedPages: pdfSelectionPages(options.range, fallbackPage),
     selection: options.selection,
+    fullContext: options.fullContext === true,
     pageTitle: document.title,
     url: source?.url || '',
     pageLanguage: readyMetadata?.pageLanguage || navigator.language,
     imageDataUrl: '',
     readPage: async (pageNumber) => {
       const state = pageStates[pageNumber - 1];
-      if (state?.contextText !== null && state?.contextText !== undefined) return state.contextText;
       const page = await documentProxy.getPage(pageNumber);
-      const content = state ? await pageTextContent(state, page) : await page.getTextContent();
-      return textContentToString(content.items);
+      const text = state?.contextText ?? textContentToString((state
+        ? await pageTextContent(state, page) : await page.getTextContent()).items);
+      return ocrReader ? ocrReader.readPage(page, text, pageNumber) : text;
     }
   });
   if (generation !== loadGeneration) throw new Error('The PDF changed while preparing the explanation. Select the passage again.');
-  return result;
+  return result === readyMetadata ? result : { ...result, ...ocrReader?.summary() };
 };
 resetMetadata();
 
@@ -2089,9 +2095,13 @@ function updateDocumentTitle(title) {
 async function indexPdfPage(documentProxy, state, { includeContext }) {
   state.indexing = true;
   let page = state.page;
+  const ocrReader = pdfOcrReader;
   try {
     page ||= await documentProxy.getPage(state.pageNumber);
-    const contextText = await indexPageText(state, page, { includeContext });
+    const nativeText = await indexPageText(state, page, { includeContext });
+    const contextText = includeContext && ocrReader
+      ? await ocrReader.readPage(page, nativeText || '', state.pageNumber) : nativeText;
+    if (contextText && contextText !== nativeText) state.searchText += `\n${contextText}`;
     return { state, contextText: contextText || '' };
   } catch (error) {
     state.textIndexed = true;
@@ -2179,6 +2189,7 @@ async function preparePdfPages({
   let extractedCharacters = 0;
   let metadataSettled = false;
   let settledTitle = '';
+  let restoredOcr = null;
 
   const settleMetadata = async () => {
     if (metadataSettled || generation !== loadGeneration) return settledTitle;
@@ -2187,6 +2198,7 @@ async function preparePdfPages({
     if (generation !== loadGeneration) return settledTitle;
     metadataResolver({
       ...formatPdfContext(contextPages, documentProxy.numPages),
+      ...(restoredOcr || pdfOcrReader?.summary()),
       pageTitle: settledTitle,
       url: sourceUrl,
       pageLanguage: navigator.language,
@@ -2217,6 +2229,7 @@ async function preparePdfPages({
     const cachedIndex = await cachedIndexPromise;
     if (generation !== loadGeneration) return;
     if (cachedIndex) {
+      restoredOcr = { ocrNotice: cachedIndex.ocrNotice, ocrPageCount: cachedIndex.ocrPageCount };
       for (let pageIndex = 0; pageIndex < cachedIndex.searchTexts.length; pageIndex += 1) {
         const state = pageStates[pageIndex];
         state.searchText = cachedIndex.searchTexts[pageIndex];
@@ -2232,7 +2245,7 @@ async function preparePdfPages({
       const indexed = pagesToIndex < documentProxy.numPages
         ? ` · search indexed through page ${pagesToIndex}`
         : '';
-      const readyStatus = `${documentProxy.numPages} page${documentProxy.numPages === 1 ? '' : 's'} · selectable text · index restored from cache${indexed}`;
+      const readyStatus = `${documentProxy.numPages} page${documentProxy.numPages === 1 ? '' : 's'} · index restored from cache${indexed}${cachedIndex.ocrNotice ? ` · ${cachedIndex.ocrNotice}` : ''}`;
       pdfReadyStatus = readyStatus;
       setStatus(readyStatus, { state: 'ready' });
       updateCurrentPage();
@@ -2278,7 +2291,8 @@ async function preparePdfPages({
     const indexed = pagesToIndex < documentProxy.numPages
       ? ` · search indexed through page ${pagesToIndex}`
       : '';
-    const readyStatus = `${documentProxy.numPages} page${documentProxy.numPages === 1 ? '' : 's'} · selectable text · context ready${indexed}`;
+    const ocrSummary = pdfOcrReader?.summary() || {};
+    const readyStatus = `${documentProxy.numPages} page${documentProxy.numPages === 1 ? '' : 's'} · context ready${indexed}${ocrSummary.ocrNotice ? ` · ${ocrSummary.ocrNotice}` : ' · selectable text'}`;
     pdfReadyStatus = readyStatus;
     setStatus(readyStatus, { state: 'ready' });
     updateCurrentPage();
@@ -2289,7 +2303,8 @@ async function preparePdfPages({
       indexedPageCount: pagesToIndex,
       searchTexts: pageStates.slice(0, pagesToIndex).map((state) => state.searchText),
       contextPages,
-      title
+      title,
+      ...ocrSummary
     };
     nextReaderTurn().then(async () => {
       if (generation !== loadGeneration) return;
@@ -2321,6 +2336,9 @@ async function openPdfInput(input, fallbackTitle = '', documentUrl = '') {
   restoreReadingPosition = true;
   history.scrollRestoration = 'manual';
   const generation = ++loadGeneration;
+  pdfOcrController?.abort();
+  pdfOcrController = new AbortController();
+  pdfOcrReader = null;
   elements['download-pdf'].disabled = true;
   elements['download-pdf'].removeAttribute('aria-busy');
   document.dispatchEvent(new CustomEvent('scholia:document-instance-changed'));
@@ -2351,6 +2369,16 @@ async function openPdfInput(input, fallbackTitle = '', documentUrl = '') {
   const nextPdf = await loadingTask.promise;
   if (generation !== loadGeneration) { await nextPdf.destroy(); return; }
   pdf = nextPdf;
+  pdfOcrReader = createPdfOcrReader({
+    signal: pdfOcrController.signal,
+    totalPages: pdf.numPages,
+    imageOperations: [pdfjs.OPS.paintImageXObject, pdfjs.OPS.paintInlineImageXObject, pdfjs.OPS.paintImageMaskXObject],
+    onProgress: ({ page, total }) => {
+      if (generation === loadGeneration) setStatus(`Reading scanned text locally · page ${page} of ${total}`, {
+        state: 'working', current: page, total
+      });
+    }
+  });
   const downloadName = input?.name || pdfjs.getPdfFilenameFromUrl(documentUrl, '')
     || fallbackTitle || source?.pageTitle || 'document';
   pdfDownloadFilename = /\.pdf$/i.test(downloadName) ? downloadName : `${downloadName}.pdf`;

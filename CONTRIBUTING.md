@@ -71,6 +71,21 @@ CI runs the JavaScript checks and web/extension builds. It also builds the
 Docker image and checks the running service and PDF worker dependencies.
 Native UI checks are run locally.
 
+Feature smoke checks also cover search, exam imports, course documents, and
+native file tools:
+
+```sh
+npm run smoke:chromium:search
+npm run smoke:chromium:exams
+npm run smoke:chromium:courses
+npm run smoke:chromium:studentweb
+npm run smoke:macos:search
+npm run smoke:macos:files
+npm run test:search:native
+```
+
+Search performance experiments are documented in [Search](docs/SEARCH.md).
+
 ## Making changes
 
 Keep a PR focused enough to review. Preserve existing tests when moving or

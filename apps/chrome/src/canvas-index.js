@@ -3,6 +3,7 @@ import { readCanvasIndex, saveCanvasIndex, deleteCanvasIndex } from './canvas-in
 import { extractPdfContext } from './pdf-context.js';
 import { readChatFile, MAX_FILE_BYTES } from './file-input.js';
 import { extractOfficeText } from './office-text.js';
+import { canvasDocumentLinks } from '../../../packages/core/src/canvas-links.js';
 
 function htmlToText(html) {
   const doc = new DOMParser().parseFromString(String(html), 'text/html');
@@ -72,7 +73,7 @@ export async function loadCanvasCourseIndex(url, { force = false, clear = false,
     if (Number(item.size) > MAX_FILE_BYTES) throw new Error('File too large.');
     const type = String(item['content-type'] || '');
     const name = String(item.display_name || item.filename || 'Course file');
-    if (!/^(text\/|application\/(pdf|json|xml))/.test(type) && !/\.(pdf|docx|pptx|xlsx|txt|md|csv|json|xml|tex|py|js|java|c|cpp|h|html)$/i.test(name)) return '';
+    if (!/^(text\/|application\/(pdf|json|xml))/.test(type) && !/\.(pdf|docx|pptx|xlsx|ipynb|txt|md|csv|json|xml|tex|py|js|java|c|cpp|h|html)$/i.test(name)) return '';
     const download = new URL(item.url);
     if (download.protocol !== 'https:' && download.origin !== course.origin) throw new Error('Invalid course file URL.');
     const response = await fetch(download.href, { credentials: 'include', signal: requestSignal() });
@@ -86,7 +87,9 @@ export async function loadCanvasCourseIndex(url, { force = false, clear = false,
     const result = await readChatFile(file, { signal });
     return { text: type.includes('html') ? htmlToText(result.text) : result.text, truncated: result.truncated };
   };
-  const index = await buildCanvasCourseIndex({ course, userId: user.id, courseInfo: info, previous, get, list, readFile, htmlToText, onProgress, signal });
+  const htmlToLinks = (html, sourceURL) => canvasDocumentLinks(
+    new DOMParser().parseFromString(String(html), 'text/html'), course.origin, course.courseId, sourceURL);
+  const index = await buildCanvasCourseIndex({ course, userId: user.id, courseInfo: info, previous, get, list, readFile, htmlToText, htmlToLinks, onProgress, signal });
   index.partial ||= listingTruncated;
   if (!index.documents.length) throw new Error('No readable course materials were found. Check course access and try again.');
   try { await saveCanvasIndex(index); } catch { index.storageUnavailable = true; }

@@ -337,3 +337,9 @@ kbd { padding:2px 4px;border:1px solid var(--line);border-radius:4px;background:
   :root { --accent:#8db8aa;--accent-strong:#739f91;--paper:#151d1b;--card:#202a27;--ink:#e9efed;--muted:#9faca8;--line:rgba(230,240,236,.14);--soft:rgba(141,184,170,.1);--gold:#d2af65;--danger:#ee8d8d; }
   .message--user .bubble { color:#10201b; }
 }
+.chat-activity { margin:10px 0;padding:9px 11px;border:1px solid #b1bbb633;border-radius:9px;font-size:12px; }
+.chat-activity summary { cursor:pointer; }
+.chat-activity summary span { opacity:.65;margin-left:5px; }
+.chat-activity ol { max-height:190px;overflow:auto;padding-left:18px; }
+.chat-activity li { margin:9px 0; }
+.chat-activity pre { white-space:pre-wrap;overflow-wrap:anywhere;font:inherit;opacity:.75;margin:4px 0; }

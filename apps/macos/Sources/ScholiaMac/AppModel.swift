@@ -50,7 +50,7 @@ final class AppModel: ObservableObject {
     @Published private(set) var screenCaptureNeedsRelaunch = false
     @Published private(set) var permissionStatus: String?
     @Published private(set) var hotKeysAvailable = true
-    @Published private(set) var isTestingProvider = false
+    @Published private(set) var modelVerification = ModelVerificationState()
     @Published private(set) var providerTestStatus: String?
     @Published private(set) var isStartingBridge = false
     @Published private(set) var bridgeReadyProviderIDs: Set<String> = []
@@ -80,6 +80,7 @@ final class AppModel: ObservableObject {
     @Published private(set) var activeApplication: ExternalApplication?
 
     private let providerClient = ProviderClient()
+    private let localFileAccessPolicy = LocalFileAccessPolicy()
     private let bridgeManager = LocalBridgeManager()
     private let applicationTracker = ExternalApplicationTracker()
     private let hotKeys = GlobalHotKeyController()
@@ -87,13 +88,14 @@ final class AppModel: ObservableObject {
     private var activeTask: Task<Void, Never>?
     private var captureTask: Task<Void, Never>?
     private var bridgeTask: Task<Void, Never>?
+    private var providerTestTask: Task<Void, Never>?
     private var bridgeTasks: [String: Task<Void, Never>] = [:]
     private var bridgeStatusTasks: [String: Task<Void, Never>] = [:]
     private var bridgeMonitorTask: Task<Void, Never>?
-    private var opencodeCatalogTask: Task<Void, Never>?
-    private var opencodeCatalogCheckedAt: Date?
-    private var opencodeCatalogEndpoint: String?
-    private var opencodeCatalogRequestID: UUID?
+    private var modelCatalogTasks: [String: Task<Void, Never>] = [:]
+    private var modelCatalogCheckedAt: [String: Date] = [:]
+    private var modelCatalogEndpoints: [String: String] = [:]
+    private var modelCatalogRequestIDs: [String: UUID] = [:]
     private var permissionRefreshTask: Task<Void, Never>?
     private var quickAskTask: Task<Void, Never>?
     private var draftAttachmentTask: Task<Void, Never>?
@@ -134,7 +136,7 @@ final class AppModel: ObservableObject {
     private lazy var selectionWatcher = SelectionWatcher(
         applicationTracker: applicationTracker,
         shouldCapture: { [weak self] application in
-            guard let self else { return false }
+            guard let self, self.started else { return false }
             return self.settings.selectionPillIsEnabled(for: application?.bundleIdentifier)
         },
         shouldIgnore: { [weak self] point in self?.selectionPill.contains(point) == true },
@@ -142,7 +144,7 @@ final class AppModel: ObservableObject {
             self?.selectionPill.hide()
         }
     ) { [weak self] capture, point in
-        guard let self,
+        guard let self, self.started,
               self.settings.selectionPillIsEnabled(for: capture.applicationBundleIdentifier),
               !self.isAnswering else { return }
         self.selectionPill.show(capture: capture, near: point)
@@ -150,6 +152,10 @@ final class AppModel: ObservableObject {
 
     private init() {
         settings = AppSettingsStore.load()
+        localFileAccessPolicy.update(
+            read: settings.resolvedLocalFileAccessEnabled,
+            write: settings.resolvedLocalFileWriteAccessEnabled
+        )
         conversationContextEnabled = true
         conversationCompactContextEnabled = settings.resolvedUseVisibleWorkspaceContext
         quickContextEnabled = true
@@ -214,7 +220,14 @@ final class AppModel: ObservableObject {
             settings.quickAskModels?[provider.id]
         ].compactMap { $0?.trimmingCharacters(in: .whitespacesAndNewlines) }
         let rememberedIDs = (settings.verifiedProviderModels?[provider.id] ?? []).map(\.id)
-        for rawID in selectedIDs + rememberedIDs {
+            + settings.recentModels.filter { $0.providerID == provider.id }.map(\.modelID)
+            + modelVerification.results.keys.filter { $0.providerID == provider.id }.map(\.modelID)
+        let profileIDs = (settings.quickAskThinkingProfiles?[provider.id] ?? [:])
+            .values.compactMap(\.modelID)
+        // Keep a custom model visible after a failed retest removes its verification.
+        let testedIDs = modelVerification.results.keys
+            .filter { $0.providerID == provider.id }.map(\.modelID)
+        for rawID in selectedIDs + rememberedIDs + profileIDs + testedIDs {
             let id = ProviderCatalog.resolvedModelID(
                 rawID,
                 for: provider.id,
@@ -223,12 +236,7 @@ final class AppModel: ObservableObject {
             guard !id.isEmpty, seen.insert(id).inserted else { continue }
             result.append(ModelDefinition(id: id, label: id))
         }
-        return result.sorted { left, right in
-            let byLabel = left.label.localizedStandardCompare(right.label)
-            return byLabel == .orderedSame
-                ? left.id.localizedStandardCompare(right.id) == .orderedAscending
-                : byLabel == .orderedAscending
-        }
+        return ModelPickerOrder.sorted(result, verified: settings.verifiedModelIDs(for: provider.id))
     }
 
     func verifiedModels(for provider: ProviderDefinition) -> [ModelDefinition] {
@@ -236,16 +244,20 @@ final class AppModel: ObservableObject {
         return availableModels(for: provider).filter { verified.contains($0.id) }
     }
 
-    func unverifiedCandidateModels(
-        for provider: ProviderDefinition,
-        limit: Int = 80
-    ) -> [ModelDefinition] {
-        let verified = settings.verifiedModelIDs(for: provider.id)
-        guard limit > 0 else { return [] }
-        return Array(availableModels(for: provider)
-            .lazy
-            .filter { !verified.contains($0.id) }
-            .prefix(limit))
+    var isTestingProvider: Bool { modelVerification.activeTest != nil }
+
+    func modelTestTarget(_ modelID: String, for provider: ProviderDefinition) -> ModelTestTarget {
+        ModelTestTarget(
+            providerID: provider.id,
+            modelID: ProviderCatalog.resolvedModelID(
+                modelID, for: provider.id, candidates: discoveredProviderModels[provider.id] ?? []
+            ),
+            endpoint: settings.endpoints[provider.id] ?? provider.endpoint
+        )
+    }
+
+    func modelTestStatus(_ modelID: String, for provider: ProviderDefinition) -> ModelTestStatus? {
+        modelVerification.results[modelTestTarget(modelID, for: provider)]
     }
 
     func modelIsVerified(_ modelID: String, for provider: ProviderDefinition) -> Bool {
@@ -260,7 +272,25 @@ final class AppModel: ObservableObject {
     }
 
     func modelDefinition(for provider: ProviderDefinition, id: String) -> ModelDefinition? {
-        availableModels(for: provider).first { $0.id == id }
+        // The composer asks for one model on every edit. Do not rebuild and
+        // sort a potentially large provider catalog just to find that row.
+        let discovered = discoveredProviderModels[provider.id] ?? []
+        let resolved = ProviderCatalog.resolvedModelID(id, for: provider.id, candidates: discovered)
+        var definition = provider.model(named: resolved)
+        if let live = discovered.first(where: { $0.id == resolved }) {
+            if definition == nil { return live }
+            if !live.reasoningEfforts.isEmpty {
+                definition?.reasoningEfforts = live.reasoningEfforts
+                definition?.defaultReasoningEffort = live.defaultReasoningEffort
+            }
+            if let supportsImages = live.supportsImages { definition?.supportsImages = supportsImages }
+        }
+        if let definition { return definition }
+        let remembered = [settings.models[provider.id], settings.quickAskModels?[provider.id]].compactMap { $0 }
+            + (settings.quickAskThinkingProfiles?[provider.id] ?? [:]).values.compactMap(\.modelID)
+            + (settings.verifiedProviderModels?[provider.id] ?? []).map(\.id)
+            + settings.recentModels.filter { $0.providerID == provider.id }.map(\.modelID)
+        return remembered.contains(resolved) ? ModelDefinition(id: resolved, label: resolved) : nil
     }
 
     var quickAskBaseModel: String {
@@ -472,6 +502,7 @@ final class AppModel: ObservableObject {
     }
 
     func stop() {
+        started = false
         if studyWorkspaceUsed { studyWindow.workspace.flush() }
         activeTask?.cancel()
         captureTask?.cancel()
@@ -481,7 +512,7 @@ final class AppModel: ObservableObject {
         for task in bridgeStatusTasks.values { task.cancel() }
         bridgeStatusTasks = [:]
         bridgeMonitorTask?.cancel()
-        opencodeCatalogTask?.cancel()
+        for task in modelCatalogTasks.values { task.cancel() }
         permissionRefreshTask?.cancel()
         quickAskTask?.cancel()
         cancelAttachmentIngestion(isQuickAsk: false)
@@ -503,7 +534,9 @@ final class AppModel: ObservableObject {
             screenCaptureNeedsRelaunch = false
         }
         if accessibilityGranted && screenCaptureGranted { permissionStatus = nil }
-        if settings.shouldMonitorSelections && accessibilityGranted {
+        // Permission refreshes also happen in workspace previews and when settings
+        // are saved. Only the running menu-bar companion may watch other apps.
+        if started && settings.shouldMonitorSelections && accessibilityGranted {
             selectionWatcher.start()
         } else {
             selectionWatcher.stop()
@@ -694,10 +727,22 @@ final class AppModel: ObservableObject {
         studyWindow.show()
     }
 
+    var studyWorkspace: StudyWorkspaceModel {
+        studyWorkspaceUsed = true
+        return studyWindow.workspace
+    }
+
     func openStudyWebsite() {
         studyWorkspaceUsed = true
         applicationWindowOpened()
         studyWebServer.open()
+    }
+
+    /// Start the local workspace API for explicit CLI/browser verification,
+    /// without opening the user's default browser.
+    func startStudyWebsite() {
+        studyWorkspaceUsed = true
+        studyWebServer.start()
     }
 
     func applicationWindowOpened() {
@@ -733,8 +778,26 @@ final class AppModel: ObservableObject {
         applyExplanationWindowBehavior()
     }
 
-    func studyProviderConfiguration() throws -> ProviderConfiguration {
-        try providerConfiguration()
+    func studyProviderConfiguration(allowLocalFiles: Bool = false) throws -> ProviderConfiguration {
+        var configuration = try providerConfiguration(allowLocalFiles: allowLocalFiles)
+        configuration.reasoningEffort = activeStudyReasoningEffort
+        return configuration
+    }
+
+    var activeStudyReasoningEffort: String? {
+        guard let definition = modelDefinition(for: activeProvider, id: activeModel),
+            !definition.reasoningEfforts.isEmpty else { return nil }
+        if let selected = settings.reasoningEfforts[activeProvider.id],
+            definition.reasoningEfforts.contains(selected) { return selected }
+        return definition.defaultReasoningEffort ?? definition.reasoningEfforts.first
+    }
+
+    func selectStudyReasoningEffort(_ effort: String) throws {
+        guard modelDefinition(for: activeProvider, id: activeModel)?.reasoningEfforts.contains(effort) == true else {
+            throw StudyError.message("This reasoning mode is unavailable for the selected model.")
+        }
+        settings.reasoningEfforts[activeProvider.id] = effort
+        persistSettings()
     }
 
     func selectStudyModel(_ modelID: String, providerID: String) {
@@ -748,10 +811,22 @@ final class AppModel: ObservableObject {
 
     func completeStudy(
         messages: [ConversationMessage], configuration: ProviderConfiguration,
+        onProgress: @escaping @MainActor @Sendable (String) -> Void = { _ in },
         onToken: @escaping @MainActor @Sendable (String) -> Void
     ) async throws -> CompletionResult {
+        onProgress("Connecting to \(configuration.provider.name)…")
         try await ensureLocalProvider(configuration)
-        return try await providerClient.complete(capture: nil, messages: messages, configuration: configuration, onToken: onToken)
+        let result = try await providerClient.complete(capture: nil, messages: messages, configuration: configuration,
+            onProgress: onProgress, onToken: onToken)
+        try Task.checkCancellation()
+        if !result.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { recordModelUse(configuration) }
+        return result
+    }
+
+    private func recordModelUse(_ configuration: ProviderConfiguration) {
+        settings.recordModelUse(providerID: configuration.provider.id, modelID: configuration.model,
+            endpoint: configuration.endpoint)
+        persistSettings()
     }
 
     func showQuickAsk() {
@@ -817,7 +892,8 @@ final class AppModel: ObservableObject {
             configuration = try providerConfiguration(
                 modelOverride: activeQuickAskModel,
                 reasoningEffortOverride: activeQuickAskReasoningEffort,
-                providerOverride: activeQuickAskProvider
+                providerOverride: activeQuickAskProvider,
+                allowLocalFiles: true
             )
         } catch {
             quickAskError = error.localizedDescription
@@ -836,9 +912,12 @@ final class AppModel: ObservableObject {
             isStreaming: true
         ))
         isQuickAskStreaming = true
+        recordChatActivity(assistantID, quick: true, title: "Preparing request")
+        for attachment in attachments { recordChatActivity(assistantID, quick: true, title: "Read attached file", detail: attachment.fileName) }
         quickAskTask = Task { [weak self] in
             guard let self else { return }
             do {
+                if useAutomaticContext { recordChatActivity(assistantID, quick: true, title: "Reading visible application context") }
                 let workspaceContext = useAutomaticContext && useCompactContext
                     ? await SelectionReader.captureVisibleWorkspaceContextAsync(
                         question: question,
@@ -857,21 +936,29 @@ final class AppModel: ObservableObject {
                     compactContextEnabled: useCompactContext,
                     fullApplicationContext: fullApplicationContext
                 )
+                recordChatActivity(assistantID, quick: true, title: "Context prepared", detail: requestCapture?.applicationName)
                 try await self.ensureLocalProvider(configuration, updatesStatus: configuration.provider.id == self.activeProvider.id)
                 let result = try await providerClient.complete(
                     capture: requestCapture,
                     messages: requestMessages,
-                    configuration: configuration
+                    configuration: configuration,
+                    onProgress: { [weak self] progress in
+                        guard let self, self.currentQuickAskRequestID == requestID else { return }
+                        self.recordChatActivity(assistantID, quick: true, title: progress)
+                    }
                 ) { [weak self] token in
                     guard let self, self.currentQuickAskRequestID == requestID,
                           let index = self.quickMessages.firstIndex(where: { $0.id == assistantID }) else { return }
                     self.quickMessages[index].content += token
+                    self.quickMessages[index].recordActivity("Writing answer…")
                 }
                 guard currentQuickAskRequestID == requestID else { return }
+                if !result.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { recordModelUse(configuration) }
                 if let index = quickMessages.firstIndex(where: { $0.id == assistantID }) {
                     quickMessages[index].content = result.text
                     quickMessages[index].reasoning = result.reasoning
                     quickMessages[index].isStreaming = false
+                    quickMessages[index].recordActivity("Answer complete", detail: result.model)
                     quickMessages[index].metadata = [result.providerName, result.model, configuration.reasoningEffort]
                         .compactMap { $0 }
                         .joined(separator: " · ")
@@ -887,7 +974,8 @@ final class AppModel: ObservableObject {
             } catch {
                 guard currentQuickAskRequestID == requestID else { return }
                 if let index = quickMessages.firstIndex(where: { $0.id == assistantID }) {
-                    if quickMessages[index].content.isEmpty {
+                    quickMessages[index].recordActivity("Response interrupted", detail: error.localizedDescription)
+                    if quickMessages[index].content.isEmpty && quickMessages[index].activity?.isEmpty != false {
                         quickMessages.remove(at: index)
                     } else {
                         quickMessages[index].isStreaming = false
@@ -905,6 +993,14 @@ final class AppModel: ObservableObject {
                     scanOpencodeSessions()
                 }
             }
+        }
+    }
+
+    private func recordChatActivity(_ assistantID: UUID, quick: Bool, title: String, detail: String? = nil) {
+        if quick, let index = quickMessages.firstIndex(where: { $0.id == assistantID }) {
+            quickMessages[index].recordActivity(title, detail: detail)
+        } else if !quick, let index = messages.firstIndex(where: { $0.id == assistantID }) {
+            messages[index].recordActivity(title, detail: detail)
         }
     }
 
@@ -1451,8 +1547,8 @@ final class AppModel: ObservableObject {
         if let assistantID,
            let index = quickMessages.firstIndex(where: { $0.id == assistantID }) {
             quickMessages[index].isStreaming = false
-            if quickMessages[index].content.isEmpty { quickMessages.remove(at: index) }
-            else { quickMessages[index].metadata = "Stopped" }
+            quickMessages[index].recordActivity("Stopped")
+            quickMessages[index].metadata = "Stopped"
         }
         isQuickAskStreaming = false
     }
@@ -1529,8 +1625,8 @@ final class AppModel: ObservableObject {
     private func finishCancelledQuickAsk(assistantID: UUID) {
         if let index = quickMessages.firstIndex(where: { $0.id == assistantID }) {
             quickMessages[index].isStreaming = false
-            if quickMessages[index].content.isEmpty { quickMessages.remove(at: index) }
-            else { quickMessages[index].metadata = "Stopped" }
+            quickMessages[index].recordActivity("Stopped")
+            quickMessages[index].metadata = "Stopped"
         }
         isQuickAskStreaming = false
         currentQuickAskRequestID = nil
@@ -1863,7 +1959,7 @@ final class AppModel: ObservableObject {
 
         let configuration: ProviderConfiguration
         do {
-            configuration = try providerConfiguration()
+            configuration = try providerConfiguration(allowLocalFiles: true)
         } catch {
             messages.removeAll { $0.id == assistantID }
             isStreaming = false
@@ -1883,6 +1979,9 @@ final class AppModel: ObservableObject {
         activeTask = Task { [weak self] in
             guard let self else { return }
             do {
+                recordChatActivity(assistantID, quick: false, title: "Preparing request")
+                for attachment in attachments ?? [] { recordChatActivity(assistantID, quick: false, title: "Read attached file", detail: attachment.fileName) }
+                if useAutomaticContext { recordChatActivity(assistantID, quick: false, title: "Reading visible application context") }
                 let workspaceContext = useAutomaticContext && useCompactContext
                     ? await SelectionReader.captureVisibleWorkspaceContextAsync(
                         question: question,
@@ -1901,20 +2000,28 @@ final class AppModel: ObservableObject {
                     fullApplicationContext: fullApplicationContext
                 )
                 try await self.ensureLocalProvider(configuration)
+                recordChatActivity(assistantID, quick: false, title: "Context prepared", detail: requestCapture?.applicationName)
                 let result = try await providerClient.complete(
                     capture: requestCapture,
                     messages: requestMessages,
-                    configuration: configuration
+                    configuration: configuration,
+                    onProgress: { [weak self] progress in
+                        guard let self, self.currentRequestID == requestID else { return }
+                        self.recordChatActivity(assistantID, quick: false, title: progress)
+                    }
                 ) { [weak self] token in
                     guard let self, self.currentRequestID == requestID,
                           let index = self.messages.firstIndex(where: { $0.id == assistantID }) else { return }
                     self.messages[index].content += token
+                    self.messages[index].recordActivity("Writing answer…")
                 }
                 guard currentRequestID == requestID else { return }
+                if !result.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { recordModelUse(configuration) }
                 if let index = messages.firstIndex(where: { $0.id == assistantID }) {
                     messages[index].content = result.text
                     messages[index].reasoning = result.reasoning
                     messages[index].isStreaming = false
+                    messages[index].recordActivity("Answer complete", detail: result.model)
                     messages[index].metadata = "\(result.providerName) · \(result.model)"
                 }
                 isStreaming = false
@@ -1927,7 +2034,8 @@ final class AppModel: ObservableObject {
             } catch {
                 guard currentRequestID == requestID else { return }
                 if let index = messages.firstIndex(where: { $0.id == assistantID }) {
-                    if messages[index].content.isEmpty { messages.remove(at: index) }
+                    messages[index].recordActivity("Response interrupted", detail: error.localizedDescription)
+                    if messages[index].content.isEmpty && messages[index].activity?.isEmpty != false { messages.remove(at: index) }
                     else {
                         messages[index].isStreaming = false
                         messages[index].metadata = "Response interrupted"
@@ -1971,8 +2079,8 @@ final class AppModel: ObservableObject {
         if requestID != nil,
            let index = messages.lastIndex(where: { $0.role == .assistant && $0.isStreaming }) {
             messages[index].isStreaming = false
-            if messages[index].content.isEmpty { messages.remove(at: index) }
-            else { messages[index].metadata = "Stopped" }
+            messages[index].recordActivity("Stopped")
+            messages[index].metadata = "Stopped"
         }
         isStreaming = false
         status = "Stopped."
@@ -1994,6 +2102,10 @@ final class AppModel: ObservableObject {
 
     func persistSettings() {
         settings.normalize()
+        localFileAccessPolicy.update(
+            read: settings.resolvedLocalFileAccessEnabled,
+            write: settings.resolvedLocalFileWriteAccessEnabled
+        )
         AppSettingsStore.save(settings)
         refreshPermissions()
     }
@@ -2187,6 +2299,8 @@ final class AppModel: ObservableObject {
         let previous = (try? ProviderKeychain.value(for: providerID)) ?? ""
         try ProviderKeychain.set(value, for: providerID)
         if previous != value {
+            if modelVerification.activeTest?.target.providerID == providerID { cancelModelTest() }
+            modelVerification.invalidate(providerID: providerID)
             settings.removeModelVerification(providerID: providerID)
             persistSettings()
         }
@@ -2196,48 +2310,71 @@ final class AppModel: ObservableObject {
     }
 
     func testActiveProvider(apiKeyOverride: String? = nil) {
+        testModel(activeModel, providerID: activeProvider.id, apiKeyOverride: apiKeyOverride)
+    }
+
+    func testModel(_ modelID: String, providerID: String, apiKeyOverride: String? = nil) {
         guard !isTestingProvider else { return }
         persistSettings()
-        isTestingProvider = true
-        providerTestStatus = "Connecting…"
+        let provider = ProviderCatalog.provider(id: providerID)
+        let target = modelTestTarget(modelID, for: provider)
+        guard let attempt = modelVerification.begin(target) else { return }
+        providerTestStatus = "Testing \(provider.name) · \(target.modelID)…"
         let configuration: ProviderConfiguration
         do {
-            configuration = try providerConfiguration(apiKeyOverride: apiKeyOverride)
+            configuration = try providerConfiguration(
+                apiKeyOverride: apiKeyOverride,
+                modelOverride: target.modelID,
+                reasoningEffortOverride: settings.reasoningEfforts[providerID],
+                providerOverride: provider
+            )
         } catch {
-            isTestingProvider = false
-            providerTestStatus = error.localizedDescription
+            finishModelTest(attempt, status: .failed(error.localizedDescription))
             return
         }
-        Task { [weak self] in
+        providerTestTask = Task { [weak self] in
             guard let self else { return }
             do {
-                try await self.ensureLocalProvider(configuration)
-                let result = try await providerClient.complete(
+                try await self.ensureLocalProvider(configuration, updatesStatus: false)
+                try Task.checkCancellation()
+                _ = try await providerClient.complete(
                     capture: nil,
                     messages: [ConversationMessage(role: .user, content: "Reply with OK only.")],
                     configuration: configuration,
                     onToken: { _ in }
                 )
-                settings.markModelVerified(
-                    providerID: configuration.provider.id,
-                    modelID: configuration.model
-                )
-                settings.models[configuration.provider.id] = configuration.model
-                persistSettings()
-                providerTestStatus = "Verified \(result.providerName) · \(result.model). This model now appears in Scholia's model pickers."
+                try Task.checkCancellation()
+                finishModelTest(attempt, status: .verified(Date()))
             } catch {
-                settings.removeModelVerification(
-                    providerID: configuration.provider.id,
-                    modelID: configuration.model
-                )
-                persistSettings()
-                providerTestStatus = error.localizedDescription
+                finishModelTest(attempt, status: Task.isCancelled ? .cancelled : .failed(error.localizedDescription))
             }
-            isTestingProvider = false
-            if configuration.provider.id == "opencode" {
+            if configuration.provider.id == "opencode", !Task.isCancelled {
                 scanOpencodeSessions()
             }
         }
+    }
+
+    private func finishModelTest(_ attempt: ModelVerificationState.Attempt, status: ModelTestStatus) {
+        guard modelVerification.finish(attempt, status: status, settings: &settings) else { return }
+        providerTestTask = nil
+        persistSettings()
+        let name = "\(ProviderCatalog.provider(id: attempt.target.providerID).name) · \(attempt.target.modelID)"
+        switch status {
+        case .verified:
+            providerTestStatus = "Verified \(name). Ready to select in the model picker."
+        case .failed(let message):
+            providerTestStatus = "\(name): \(message)"
+        case .cancelled:
+            providerTestStatus = "Test cancelled for \(name)."
+        case .testing:
+            break
+        }
+    }
+
+    func cancelModelTest() {
+        guard let attempt = modelVerification.activeTest else { return }
+        providerTestTask?.cancel()
+        finishModelTest(attempt, status: .cancelled)
     }
 
     func startActiveBridge() {
@@ -2314,7 +2451,7 @@ final class AppModel: ObservableObject {
                 if provider.id == self.activeProvider.id {
                     self.providerTestStatus = self.bridgeReadyMessage(bridge: bridge, health: health)
                 }
-                self.scheduleOpencodeCatalogRefresh(
+                self.scheduleModelCatalogRefresh(
                     provider: provider,
                     endpoint: endpoint,
                     apiKey: apiKey,
@@ -2329,32 +2466,40 @@ final class AppModel: ObservableObject {
         }
     }
 
-    private func scheduleOpencodeCatalogRefresh(
+    func refreshModelCatalogs() {
+        for provider in ProviderCatalog.providers where ["codex", "opencode"].contains(provider.id) {
+            scheduleModelCatalogRefresh(provider: provider,
+                endpoint: settings.endpoints[provider.id] ?? provider.endpoint,
+                apiKey: (try? ProviderKeychain.value(for: provider.id)) ?? "")
+        }
+    }
+
+    private func scheduleModelCatalogRefresh(
         provider: ProviderDefinition,
         endpoint: String,
         apiKey: String,
         force: Bool = false
     ) {
-        guard provider.id == "opencode" else { return }
+        guard ["opencode", "codex"].contains(provider.id) else { return }
         let now = Date()
         if !force,
-           opencodeCatalogEndpoint == endpoint,
-           let checkedAt = opencodeCatalogCheckedAt,
-           now.timeIntervalSince(checkedAt) < 10 * 60 {
+           modelCatalogEndpoints[provider.id] == endpoint,
+           let checkedAt = modelCatalogCheckedAt[provider.id],
+           now.timeIntervalSince(checkedAt) < 2 * 60 {
             return
         }
-        if opencodeCatalogTask != nil, opencodeCatalogEndpoint == endpoint { return }
+        if modelCatalogTasks[provider.id] != nil, modelCatalogEndpoints[provider.id] == endpoint { return }
 
-        opencodeCatalogTask?.cancel()
+        modelCatalogTasks[provider.id]?.cancel()
         let requestID = UUID()
-        opencodeCatalogRequestID = requestID
-        opencodeCatalogEndpoint = endpoint
-        opencodeCatalogTask = Task { [weak self] in
+        modelCatalogRequestIDs[provider.id] = requestID
+        modelCatalogEndpoints[provider.id] = endpoint
+        modelCatalogTasks[provider.id] = Task { [weak self] in
             guard let self else { return }
             defer {
-                if self.opencodeCatalogRequestID == requestID {
-                    self.opencodeCatalogRequestID = nil
-                    self.opencodeCatalogTask = nil
+                if self.modelCatalogRequestIDs[provider.id] == requestID {
+                    self.modelCatalogRequestIDs[provider.id] = nil
+                    self.modelCatalogTasks[provider.id] = nil
                 }
             }
             do {
@@ -2363,7 +2508,8 @@ final class AppModel: ObservableObject {
                     endpoint: endpoint,
                     apiKey: apiKey
                 )
-                guard !Task.isCancelled, self.opencodeCatalogRequestID == requestID else { return }
+                guard !Task.isCancelled, self.modelCatalogRequestIDs[provider.id] == requestID,
+                      (self.settings.endpoints[provider.id] ?? provider.endpoint) == endpoint else { return }
                 self.discoveredProviderModels[provider.id] = models
                 let selected = self.settings.models[provider.id] ?? provider.defaultModel
                 let resolved = ProviderCatalog.resolvedModelID(
@@ -2375,12 +2521,12 @@ final class AppModel: ObservableObject {
                     self.settings.models[provider.id] = resolved
                     self.persistSettings()
                 }
-                self.opencodeCatalogCheckedAt = Date()
+                self.modelCatalogCheckedAt[provider.id] = Date()
             } catch is CancellationError {
                 return
             } catch {
-                guard self.opencodeCatalogRequestID == requestID else { return }
-                self.opencodeCatalogCheckedAt = Date()
+                guard self.modelCatalogRequestIDs[provider.id] == requestID else { return }
+                self.modelCatalogCheckedAt[provider.id] = Date()
             }
         }
     }
@@ -2481,7 +2627,7 @@ final class AppModel: ObservableObject {
     private func ensureLocalProvider(_ configuration: ProviderConfiguration, updatesStatus: Bool = true) async throws {
         guard let bridge = configuration.provider.bridge else { return }
         if bridgeReadyProviderIDs.contains(configuration.provider.id) {
-            scheduleOpencodeCatalogRefresh(
+            scheduleModelCatalogRefresh(
                 provider: configuration.provider,
                 endpoint: configuration.endpoint,
                 apiKey: configuration.apiKey
@@ -2499,7 +2645,7 @@ final class AppModel: ObservableObject {
                 endpoint: configuration.endpoint,
                 apiKey: configuration.apiKey
             )
-            scheduleOpencodeCatalogRefresh(
+            scheduleModelCatalogRefresh(
                 provider: configuration.provider,
                 endpoint: configuration.endpoint,
                 apiKey: configuration.apiKey
@@ -2562,7 +2708,7 @@ final class AppModel: ObservableObject {
                     guard provider.bridge != nil,
                           provider.id == "codex" || provider.id == "claudecode" else { continue }
                     let endpoint = self.settings.endpoints[provider.id] ?? provider.endpoint
-                    let apiKey = (try? ProviderKeychain.value(for: provider.id)) ?? ""
+                    let apiKey = (try? await ProviderKeychain.valueAsync(for: provider.id)) ?? ""
                     let health = await self.bridgeManager.check(provider: provider, endpoint: endpoint, apiKey: apiKey)
                     guard !Task.isCancelled else { break }
                     if health == nil {
@@ -2630,8 +2776,8 @@ final class AppModel: ObservableObject {
     private func finishCancelledResponse(assistantID: UUID) {
         if let index = messages.firstIndex(where: { $0.id == assistantID }) {
             messages[index].isStreaming = false
-            if messages[index].content.isEmpty { messages.remove(at: index) }
-            else { messages[index].metadata = "Stopped" }
+            messages[index].recordActivity("Stopped")
+            messages[index].metadata = "Stopped"
         }
         isStreaming = false
         currentRequestID = nil
@@ -2663,7 +2809,8 @@ final class AppModel: ObservableObject {
         apiKeyOverride: String? = nil,
         modelOverride: String? = nil,
         reasoningEffortOverride: String? = nil,
-        providerOverride: ProviderDefinition? = nil
+        providerOverride: ProviderDefinition? = nil,
+        allowLocalFiles: Bool = false
     ) throws -> ProviderConfiguration {
         let provider = providerOverride ?? activeProvider
         let key: String
@@ -2694,7 +2841,8 @@ final class AppModel: ObservableObject {
             reasoningEffort: resolvedEffort,
             fastClaudeMode: settings.fastClaudeMode,
             modelSupportsImages: modelDefinition(for: provider, id: resolvedModel)?
-                .supportsImages ?? (provider.id != "opencode")
+                .supportsImages ?? (provider.id != "opencode"),
+            localFileAccess: allowLocalFiles ? localFileAccessPolicy : nil
         )
     }
 

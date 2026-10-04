@@ -21,6 +21,16 @@ test('continue reading uses actual visits, orders across courses, and excludes u
   assert.equal(continueReadingMarkup(recentReadings([])), '');
 });
 
+test('recent reading window agrees with full chronological ordering across ties and limits', () => {
+  const courses = Array.from({ length: 7 }, (_, course) => ({ id: String(course), documents:
+    Array.from({ length: 300 }, (_, i) => document(`${course}-${i}`, i % 17 ? (i * 19 + course) % 83 : NaN)) }));
+  const expected = courses.flatMap((course) => course.documents
+    .filter((document) => Number.isFinite(document.lastOpenedAt)).map((document) => ({ course, document })))
+    .sort((a, b) => b.document.lastOpenedAt - a.document.lastOpenedAt || a.document.id.localeCompare(b.document.id));
+  for (const limit of [0, -1, 1, 3, 15, 5000])
+    assert.deepEqual(recentReadings(courses, limit), expected.slice(0, Math.max(0, limit)));
+});
+
 test('resume cards escape imported names and respect the library filter', () => {
   const state = fixture(); state.library.courses[1].documents[0].title = '<img src=x onerror=bad()> "hello"';
   const html = courseLibraryMarkup(state);
@@ -44,6 +54,9 @@ test('chat updates and reading timestamps cannot recreate the current reading su
   state.library.courses[0].documents[0].lastOpenedAt = 40;
   state.busy = true;
   assert.equal(readerRenderKey(state), before);
+  state.library.courses[0].documents[0].classification = { categoryID: 'notes', topic: 'Linear maps' };
+  state.library.courses[0].documents[0].materialAnalysis = { categoryID: 'notes', topic: 'Linear maps' };
+  assert.equal(readerRenderKey(state), before, 'background organization must not recreate the reader');
   state.library.courses[0].documents[0] = Object.fromEntries(Object.entries(state.library.courses[0].documents[0]).reverse());
   assert.equal(readerRenderKey(state), before, 'native JSON property ordering must not redraw the document');
   state.page = 6;
@@ -75,6 +88,7 @@ test('polling backs off while idle, hidden or disconnected and speeds up for ans
   assert.ok(studyPollDelay({ streaming: true }) < 900);
   assert.ok(studyPollDelay({ loadingDocument: true }) < 900);
   assert.ok(studyPollDelay({}) > studyPollDelay({ busy: true }));
+  assert.ok(studyPollDelay({}) > studyPollDelay({ assignmentPreparing: true }));
   assert.ok(studyPollDelay({}, true) > studyPollDelay({}));
   assert.ok(studyPollDelay({}, false, true) > studyPollDelay({}));
 });

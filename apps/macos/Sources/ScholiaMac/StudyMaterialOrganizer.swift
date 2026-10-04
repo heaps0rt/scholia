@@ -13,6 +13,17 @@ struct StudyMaterialEntry: Encodable, Identifiable, Sendable {
     var order: Int
     var submissionStatus: CanvasSubmissionStatus?
     var requiresSubmission: Bool?
+    var assignment: CanvasAssignmentDetails?
+    var categoryID: String
+    var categoryTitle: String
+    var classificationConfidence: String
+    var classificationBasis: String
+    var topic: String?
+    var extractionMethod: String
+    var canvasHeading: String?
+    var canvasSubheading: String?
+    var linkedPosition: Int?
+    var linkedOrder: [Int]?
 }
 struct StudyMaterialGroup: Encodable, Identifiable, Sendable {
     var id: String
@@ -29,25 +40,42 @@ enum StudyMaterialOrganizer {
             course.documents.compactMap { doc in doc.sourceKey.map { ($0, doc) } },
             uniquingKeysWith: { first, _ in first })
         let references = Dictionary(course.materials.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
+        let needle = query.trimmingCharacters(in: .whitespacesAndNewlines)
         func add(document: StudyDocument?, reference: CanvasMaterialReference?) {
             let title = document?.title ?? reference?.title ?? "Untitled material"
-            guard
-                query.isEmpty || (title + " " + (reference?.moduleTitle ?? "")).localizedCaseInsensitiveContains(query)
-            else { return }
-            let grouping: (String, String, Int, String)
-            if let id = reference?.moduleID, let name = reference?.moduleTitle {
-                grouping = ("module:\(id)", name, (reference?.modulePosition ?? 0) + 1, "Canvas module order")
+            let analysis: StudyMaterialClassification
+            if let cached = document?.classification, cached.version == StudyMaterialClassifier.version,
+               reference?.kind != .assignments, reference?.kind != .syllabus {
+                analysis = cached
             } else {
-                let category = category(
-                    title: title, fileName: reference?.fileName ?? document?.fileName, kind: reference?.kind,
-                    documentKind: document?.kind)
-                grouping = (category.0, category.1, 10_000 + category.2, "Grouped by explicit titles and file types")
+                analysis = StudyMaterialClassifier.analyze(title: title,
+                    fileName: reference?.fileName ?? document?.originalFileName ?? document?.fileName,
+                    kind: document?.kind, materialKind: reference?.kind)
+            }
+            let searchable = [title, reference?.fileName ?? "", reference?.moduleTitle ?? "",
+                reference?.moduleSection ?? "", reference?.folderTitle ?? "",
+                reference?.linkedFromTitle ?? "", reference?.linkedSection ?? "",
+                analysis.categoryTitle, analysis.topic ?? ""].joined(separator: " ")
+            guard needle.isEmpty || searchable.localizedCaseInsensitiveContains(needle) else { return }
+            let externalWebsite = reference?.isMathWiki == true || reference?.isCourseWebsite == true
+            let grouping: (String, String, Int, String)
+            if let id = reference?.moduleID, let name = reference?.moduleTitle, !name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                grouping = ("module:\(id)", name, (reference?.modulePosition ?? 0) + 1, "Canvas module order")
+            } else if let id = reference?.linkedFromID, let name = reference?.linkedFromTitle, !name.isEmpty {
+                grouping = ("canvas-page:\(id)", name, 5_000, externalWebsite ? "Linked from course website" : "Linked from Canvas")
+            } else if let id = reference?.folderID, let name = reference?.folderTitle, !name.isEmpty {
+                grouping = ("folder:\(id)", name, 7_500, externalWebsite ? "Course website" : "Canvas folder")
+            } else {
+                grouping = (analysis.categoryID, analysis.categoryTitle, 10_000 + analysis.categoryOrder,
+                    "Grouped by content, document headings and file metadata")
             }
             let changed = reference.flatMap { ref in
                 course.catalogChanges?.added.contains(ref.id) == true
                     ? "New" : course.catalogChanges?.updated.contains(ref.id) == true ? "Updated" : nil
             }
-            let update = document.flatMap { course.updateAvailable(for: $0) } != nil
+            let update = document.map { saved in
+                reference.map { !$0.version.isEmpty && $0.version != saved.sourceVersion } ?? false
+            } ?? false
             let entry = StudyMaterialEntry(
                 id: document.map { "saved:\($0.id)" } ?? "canvas:\(reference!.id)", title: title,
                 documentID: document?.id, materialID: reference?.id,
@@ -59,7 +87,13 @@ enum StudyMaterialOrganizer {
                 badge: update ? "Update available" : changed, updateAvailable: update,
                 order: reference?.moduleItemPosition ?? Int.max,
                 submissionStatus: reference?.assignment?.status,
-                requiresSubmission: reference?.assignment?.requiresSubmission)
+                requiresSubmission: reference?.assignment?.requiresSubmission, assignment: reference?.assignment,
+                categoryID: analysis.categoryID, categoryTitle: analysis.categoryTitle,
+                classificationConfidence: analysis.confidence, classificationBasis: analysis.basis,
+                topic: analysis.topic, extractionMethod: analysis.extractionMethod,
+                canvasHeading: reference?.linkedFromTitle ?? reference?.moduleSection,
+                canvasSubheading: reference?.linkedSection, linkedPosition: reference?.linkedPosition,
+                linkedOrder: reference?.linkedOrder)
             if groups[grouping.0] == nil {
                 groups[grouping.0] = StudyMaterialGroup(
                     id: grouping.0, title: grouping.1, basis: grouping.3, order: grouping.2, items: [])
@@ -74,6 +108,8 @@ enum StudyMaterialOrganizer {
             var sorted = group
             sorted.items.sort {
                 if $0.order != $1.order { return $0.order < $1.order }
+                if $0.linkedOrder != $1.linkedOrder { return ($0.linkedOrder ?? []).lexicographicallyPrecedes($1.linkedOrder ?? []) }
+                if $0.linkedPosition != $1.linkedPosition { return ($0.linkedPosition ?? -1) < ($1.linkedPosition ?? -1) }
                 if ["lectures", "exercises"].contains(group.id) {
                     let left = teachingNumber($0.title, group: group.id)
                     let right = teachingNumber($1.title, group: group.id)
@@ -91,11 +127,11 @@ enum StudyMaterialOrganizer {
 
     /// A flat inventory of original files, including remote files and course assets.
     /// Reuse the organized entries so downloaded Canvas files appear only once.
-    static func files(for course: StudyCourse, query: String = "") -> [StudyMaterialEntry] {
+    static func files(for course: StudyCourse, query: String = "", groups: [StudyMaterialGroup]? = nil) -> [StudyMaterialEntry] {
         let references = Dictionary(course.materials.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
         let documents = Dictionary(course.documents.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
         let needle = query.trimmingCharacters(in: .whitespacesAndNewlines)
-        return groups(for: course).flatMap(\.items).compactMap { entry in
+        return (groups ?? self.groups(for: course)).flatMap(\.items).compactMap { entry in
             let reference = entry.materialID.flatMap { references[$0] }
             let document = entry.documentID.flatMap { documents[$0] }
             if let reference {
@@ -110,7 +146,9 @@ enum StudyMaterialOrganizer {
                 ?? (ext.isEmpty || entry.title.lowercased().hasSuffix(".\(ext.lowercased())")
                     ? entry.title : "\(entry.title).\(ext)")
             file.title = reference?.fileName.flatMap { $0.isEmpty ? nil : $0 } ?? localName
-            guard needle.isEmpty || file.title.localizedCaseInsensitiveContains(needle) else { return nil }
+            guard needle.isEmpty || [file.title, entry.title, entry.categoryTitle, entry.topic ?? "",
+                reference?.moduleTitle ?? "", reference?.folderTitle ?? "", entry.canvasHeading ?? "", entry.canvasSubheading ?? ""].joined(separator: " ")
+                .localizedCaseInsensitiveContains(needle) else { return nil }
             return file
         }.sorted {
             let order = $0.title.localizedStandardCompare($1.title)
@@ -133,39 +171,7 @@ enum StudyMaterialOrganizer {
     static func category(title: String, fileName: String?, kind: CanvasMaterialKind?, documentKind: StudyDocumentKind?)
         -> (String, String, Int)
     {
-        let value = title.lowercased().replacingOccurrences(of: "_", with: " ")
-        let ext = URL(fileURLWithPath: fileName ?? title).pathExtension.lowercased()
-        func matches(_ pattern: String) -> Bool { value.range(of: pattern, options: .regularExpression) != nil }
-        if documentKind == .image || StudyDocumentImporter.imageExtensions.contains(ext),
-            matches(#"(?:^|\b)(?:icon|logo|divider|banner|footer|header)(?:\b|[-\d])|\bhovedlogo\b"#)
-        {
-            return ("assets", "Course assets", 100)
-        }
-        if kind == .syllabus || matches(#"\b(syllabus|kursplan|course overview|emnebeskrivelse)\b"#) {
-            return ("information", "Course information", 0)
-        }
-        if matches(#"\b(exam|eksamen|past paper)\b"#) { return ("exams", "Exams", 40) }
-        if kind == .assignments
-            || matches(
-                #"\b(exercise|assignment|problem set|øving|oving|oppgave|homework|lab|semesteroppgave|prosjektoppgave)\b|\b(?:oving|øving|exercise|assignment)[ -]*\d+"#
-            )
-        {
-            return ("exercises", "Exercises & assignments", 30)
-        }
-        if matches(
-            #"\b(lecture|lectures|forelesning|forelesningsnotater|slides|lecture notes)\b|\b(?:forel|forelesning|lecture|lec)[ -]*\d+|^l\d+\b"#
-        ) {
-            return ("lectures", "Lecture notes", 10)
-        }
-        if matches(#"\b(reading|readings|pensum|chapter|kapittel|textbook|article|artikkel)\b"#) {
-            return ("readings", "Readings", 20)
-        }
-        if documentKind == .code || documentKind == .notebook || ext == "ipynb"
-            || StudyFileFormats.codeExtensions.contains(ext)
-        {
-            return ("code", "Code & notebooks", 50)
-        }
-        if kind == .files || documentKind != nil { return ("documents", "Documents", 70) }
-        return ("other", "Other materials", 90)
+        let result = StudyMaterialClassifier.analyze(title: title, fileName: fileName, kind: documentKind, materialKind: kind)
+        return (result.categoryID, result.categoryTitle, result.categoryOrder)
     }
 }

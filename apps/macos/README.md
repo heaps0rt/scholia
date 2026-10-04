@@ -6,23 +6,31 @@ Questions require the provider or local model you select.
 
 Requires macOS 14 or newer, Node.js 24 or newer, and Apple's developer tools.
 
-## Build and install
+## Install and update
 
 From the repository root:
 
 ```sh
-npm ci
-npm run build:macos
-npm run install:macos -- --launch
+npm run update:macos
 ```
 
-The build creates `dist/macos/Scholia.app`. The installer checks its signature,
-replaces the Applications copy, and verifies the installed app before removing
-the backup. For development, `npm run run:macos` runs the Swift package directly.
-Services and launch at login need the packaged app.
+Or double-click [Update Scholia.command](../../Update%20Scholia.command). It
+installs dependencies, builds, installs in Applications, and opens Scholia. Later,
+use **Scholia → Update Scholia…**. A Terminal window shows progress.
 
-If Command Line Tools reports a missing `SwiftUIMacros.StateMacro` plugin, set
-`SDKROOT` to a compatible SDK installed on your Mac. For example, if available:
+Updates use the current checkout, including local edits; update your checkout
+first to get changes from GitHub. Keep the source folder on your Mac. If you move
+it, run its updater once to reconnect the app. Saved data and credentials survive
+app replacement; a failed replacement restores the previous app.
+
+Local updates use incremental debug builds. For an optimized build, use
+`npm run update:macos -- --release`. `npm run build:macos` only builds the bundle;
+`npm run install:macos -- --skip-build --launch` installs an existing build.
+`npm run run:macos` runs the Swift package directly. Services and launch at login
+need the packaged app. `npm run update:macos -- --help` lists installer options.
+
+The build uses the installed 26.5 SDK when newer Command Line Tools lack the
+`SwiftUIMacros.StateMacro` plugin. To choose an SDK explicitly:
 
 ```sh
 SDKROOT=/Library/Developer/CommandLineTools/SDKs/MacOSX26.5.sdk npm run build:macos
@@ -43,7 +51,10 @@ npm run install:macos -- --migrate-permissions --launch
 ```
 
 Grant permissions to that installed copy once, then use the normal install
-command for later updates.
+command for later updates. Keychain approval is separate: locally signed builds
+can prompt again after their code changes. Apple Development or Developer ID
+signing provides a stable team identity for that check. Resetting privacy grants
+does not fix Keychain prompts. See [Apple's client-identity implementation](https://github.com/apple-oss-distributions/Security/blob/main/securityd/src/clientid.cpp).
 
 | Variable                           | Effect                                       |
 | ---------------------------------- | -------------------------------------------- |
@@ -59,12 +70,32 @@ and Services can be used without Accessibility.
 
 ## First launch
 
-1. Open Settings, choose a provider, and use **Test provider** with a model.
-   Model pickers show tested models for the current endpoint and key.
+1. Save the provider connection in Settings. Open **Browse & test…** or a model
+   picker to search the catalog and test a model. **Verified** models can be
+   selected. Tests use a short text request and apply to the endpoint and key;
+   they do not change your active model.
 2. Press Command-1 to open the workspace. Import a file with Command-O, drop a
    file onto the app, or connect Canvas.
 3. Read and ask in the tutor pane. The [workspace guide](../../docs/STUDY_WORKSPACE.md)
    covers assignments, downloads, editing, and practice.
+
+## Files in chat
+
+Give a chat a path, or ask it to find a file in a folder. File tools can read PDFs,
+Office documents, text/code, and supported images. Broad searches skip hidden
+files, bundles, and build/dependency directories; exact paths remain available.
+If a search is incomplete, narrow the folder.
+
+**Settings → Privacy → Local files** controls these tools. **Allow file access**
+is on by default. **Allow write access** is off by default and permits creating
+folders and creating/editing text or code. Replacing an existing file requires a
+complete read; a file changed since that read is not overwritten. Turning access
+off also blocks later operations in an answer already running.
+
+Read content reaches your selected provider. macOS folder permissions still
+apply. The local website shares these chat permissions; hosted accounts and the
+extension cannot use them to access your Mac. Classification, practice generation,
+and connection tests do not receive file tools.
 
 ## Menu-bar companion
 
@@ -84,7 +115,9 @@ browser shortcut. The menu-bar icon reflects the selection switch.
 
 Quick Chat starts as a temporary prompt. Return sends; Shift-Return adds a line.
 Attach an image, PDF, or text file for context. **Move to saved chat** keeps the
-conversation. Selecting part of an answer opens a nested explanation; **Back**
+conversation. You can draft the next question while an answer streams.
+**Activity** shows source reads, attachment preparation, and provider-reported
+tools or searches; it is retained with saved chats. Selecting part of an answer opens a nested explanation; **Back**
 returns to the parent. Editing a sent question regenerates later turns.
 
 **Compact**, **Full**, and **None** control automatic context. When enabled,

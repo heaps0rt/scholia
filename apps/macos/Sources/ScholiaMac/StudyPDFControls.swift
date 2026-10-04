@@ -122,11 +122,12 @@ final class StudyPDFControls: ObservableObject {
         } else {
             matches = []
         }
-        if matches.isEmpty {
-            if engine == nil { engine = StudyDocumentSearch() }
-            matches =
-                engine?.matches(pages: pages, query: query, semantic: semantic).map { StudySearchMatch(page: $0) } ?? []
-        }
+        // A native hit on one page must not hide OCR-only hits elsewhere.
+        if engine == nil { engine = StudyDocumentSearch() }
+        let nativePages = Set(matches.map(\.page))
+        matches += (engine?.matches(pages: pages, query: query, semantic: semantic) ?? [])
+            .filter { !nativePages.contains($0) }.map { StudySearchMatch(page: $0) }
+        matches.sort { $0.page < $1.page }
     }
     func nextMatch(_ direction: Int) -> Int? {
         guard !matches.isEmpty else { return nil }

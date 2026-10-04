@@ -1,6 +1,7 @@
 @preconcurrency import AppKit
 @preconcurrency import CoreGraphics
 import SwiftUI
+import Combine
 
 enum QuickChatThinkingCycleDirection: Equatable, Sendable {
     case forward
@@ -405,7 +406,7 @@ final class QuickAskPanelController: NSWindowController, NSWindowDelegate {
     }
 
     private static let panelWidth: CGFloat = 520
-    private static let promptHeight: CGFloat = 320
+    private static let promptHeight: CGFloat = 224
     private static let answerHeight: CGFloat = 480
     private static let minimumAnswerSize = NSSize(width: 480, height: 420)
     private static let maximumAnswerSize = NSSize(width: 680, height: 580)
@@ -418,6 +419,7 @@ final class QuickAskPanelController: NSWindowController, NSWindowDelegate {
     private var preferredAnswerSize: NSSize
     private var visibilityAnimationID = UUID()
     private var localEventMonitor: Any?
+    private var promptLayoutObservation: AnyCancellable?
     private lazy var commandTabEventTap = QuickChatCommandTabEventTap(
         isEnabled: { [weak self] in
             guard let model = self?.model else { return false }
@@ -461,6 +463,9 @@ final class QuickAskPanelController: NSWindowController, NSWindowDelegate {
         panel.isReleasedWhenClosed = false
         panel.isFloatingPanel = true
         panel.becomesKeyOnlyIfNeeded = false
+        // Quick Ask remains available from its global shortcut while a workspace
+        // sheet is open. Otherwise AppKit shows the panel but blocks its input.
+        panel.worksWhenModal = true
         panel.level = .floating
         panel.hidesOnDeactivate = false
         panel.isExcludedFromWindowsMenu = false
@@ -483,6 +488,14 @@ final class QuickAskPanelController: NSWindowController, NSWindowDelegate {
             return true
         }
         panel.closeHandler = { [weak model] in model?.dismissQuickAsk() }
+        promptLayoutObservation = model.$quickDraftAttachments.map { !$0.isEmpty }
+            .combineLatest(model.$quickAskError.map { $0 != nil })
+            .removeDuplicates { $0.0 == $1.0 && $0.1 == $1.1 }
+            .sink { [weak self] state in
+                DispatchQueue.main.async {
+                    self?.resizePrompt(hasAttachments: state.0, hasError: state.1)
+                }
+            }
         localEventMonitor = NSEvent.addLocalMonitorForEvents(
             matching: [.keyDown, .leftMouseDown, .leftMouseUp, .scrollWheel]
         ) { [weak self] event in
@@ -501,9 +514,7 @@ final class QuickAskPanelController: NSWindowController, NSWindowDelegate {
         hideResponseSelection()
         layoutMode = .prompt
         panel.styleMask.remove(.resizable)
-        panel.minSize = NSSize(width: Self.panelWidth, height: Self.promptHeight)
-        panel.maxSize = panel.minSize
-        resize(to: NSSize(width: Self.panelWidth, height: Self.promptHeight))
+        resizePrompt(hasAttachments: model?.quickDraftAttachments.isEmpty == false, hasError: model?.quickAskError != nil)
         position()
         model?.quickChatWindowVisibilityDidChange(true)
         panel.deminiaturize(nil)
@@ -651,6 +662,16 @@ final class QuickAskPanelController: NSWindowController, NSWindowDelegate {
         }
     }
 
+    private func resizePrompt(hasAttachments: Bool, hasError: Bool) {
+        guard layoutMode == .prompt else { return }
+        // AppKit owns the size; only actual attachment/error rows add height.
+        let height = Self.promptHeight + (hasAttachments ? 40 : 0) + (hasError ? 58 : 0)
+        let size = NSSize(width: Self.panelWidth, height: height)
+        panel.minSize = size
+        panel.maxSize = size
+        if panel.frame.size != size { resize(to: size) }
+    }
+
     private func presentPanel() {
         // Keep the current application/Space active; the panel takes key focus on its own.
         // Activating Scholia here can switch back to a desktop before the overlay is ordered.
@@ -768,8 +789,18 @@ private struct QuickAskPanelView: View {
         )
         .onExitCommand(perform: model.dismissQuickAsk)
         .onChange(of: model.quickMessages.isEmpty) { _, isEmpty in
-            guard !isEmpty else { return }
-            DispatchQueue.main.async { followUpFocused = true }
+            DispatchQueue.main.async {
+                promptFocused = isEmpty
+                followUpFocused = !isEmpty
+            }
+        }
+        .onChange(of: model.quickLayerID) { _, _ in
+            // Hiding an NSPanel does not recreate this SwiftUI view. Reopening
+            // a fresh prompt must request focus again, not rely on onAppear.
+            DispatchQueue.main.async {
+                promptFocused = model.quickMessages.isEmpty
+                followUpFocused = !model.quickMessages.isEmpty
+            }
         }
     }
 
@@ -780,7 +811,7 @@ private struct QuickAskPanelView: View {
                 VStack(alignment: .leading, spacing: 0) {
                     Text("Quick Ask")
                         .font(.system(.headline, design: .serif, weight: .bold))
-                    Text("A temporary conversation")
+                    Text("Temporary conversation")
                         .font(.caption2)
                         .foregroundStyle(.secondary)
                 }
@@ -800,6 +831,7 @@ private struct QuickAskPanelView: View {
                     compact: true,
                     onRemove: model.removeQuickDraftAttachment
                 )
+                .frame(height: 30)
             }
 
             HStack(spacing: 10) {
@@ -842,8 +874,8 @@ private struct QuickAskPanelView: View {
             }
             Text(model.quickAskThinkingIsAvailable
                 ? "↩ send · ⇧↩ new line · ⌘⇥ thinking"
-                : "↩ send · ⇧↩ new line · thinking unavailable")
-                .font(.caption2.monospaced())
+                : "↩ send · ⇧↩ new line")
+                .font(.caption2)
                 .foregroundStyle(.tertiary)
                 .frame(maxWidth: .infinity, alignment: .leading)
         }
@@ -961,7 +993,6 @@ private struct QuickAskPanelView: View {
                             : "Ask about the pasted image…",
                         font: .systemFont(ofSize: 14, weight: .medium),
                         height: 42,
-                        isEnabled: !model.isQuickAskStreaming,
                         onSubmit: model.submitQuickAsk,
                         onPasteAttachment: { model.attachFromPasteboard(isQuickAsk: true) }
                     )
@@ -1036,6 +1067,7 @@ private struct QuickAskPanelView: View {
                    !reasoning.isEmpty {
                     ProviderReasoningView(source: reasoning, compact: true)
                 }
+                if let activity = message.activity { ConversationActivityView(events: activity) }
                 if message.role == .user, let imageData = message.imageData {
                     ConversationMessageImageView(data: imageData, compact: true)
                 }
@@ -1048,17 +1080,11 @@ private struct QuickAskPanelView: View {
                         Text("Thinking…").foregroundStyle(.secondary)
                     }
                 } else if message.role == .assistant {
-                    if message.isStreaming {
-                        Text(message.content)
-                            .textSelection(.enabled)
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                    } else {
-                        RichMarkdownView(
-                            source: message.content,
-                            compact: true,
-                            registerSelectionView: { selectionRegions.register($0, for: message.id) }
-                        )
-                    }
+                    RichMarkdownView(
+                        source: message.content,
+                        compact: true,
+                        registerSelectionView: { selectionRegions.register($0, for: message.id) }
+                    )
                 } else if model.editingQuickMessageID == message.id {
                     ConversationMessageEditor(
                         text: $model.quickMessageEditDraft,
@@ -1132,7 +1158,8 @@ private struct QuickAskPanelView: View {
             HStack(spacing: 6) {
                 Image(systemName: "cpu")
                 Text(quickAskMenuLabel)
-                    .fixedSize(horizontal: false, vertical: true)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
                 Spacer(minLength: 2)
                 Image(systemName: "chevron.down")
             }
@@ -1289,6 +1316,7 @@ private struct QuickAskPanelView: View {
     private func inputBorder(focused: Bool) -> some View {
         RoundedRectangle(cornerRadius: 13)
             .stroke(focused ? accentColor.opacity(0.9) : .primary.opacity(0.16), lineWidth: focused ? 1.5 : 1)
+            .allowsHitTesting(false)
     }
 
     private var accentColor: Color {
@@ -1359,7 +1387,11 @@ struct ScholiaModelPickerPopover: View {
     @Environment(\.colorScheme) private var colorScheme
     @Binding var isPresented: Bool
     var usesExplainModel = false
+    var providerID: String? = nil
+    var onTestModel: ((String, String) -> Void)? = nil
     @State private var query = ""
+    @State private var displayedModels: [String: [ModelDefinition]] = [:]
+    @State private var displayedRecentModels: [RecentProviderModel] = []
     @FocusState private var searchFocused: Bool
 
     var body: some View {
@@ -1368,11 +1400,12 @@ struct ScholiaModelPickerPopover: View {
                 Image(systemName: "checkmark.shield.fill")
                     .foregroundStyle(Color.accentColor)
                 VStack(alignment: .leading, spacing: 1) {
-                    Text("Verified models")
+                    Text("Models")
                         .font(.headline)
-                    Text("Only models that passed Test provider")
+                    Text("Recently used · all models by provider")
                         .font(.caption2)
                         .foregroundStyle(.secondary)
+                        .help("Your most recently used models appear first. The remaining catalog keeps verified models first within each provider.")
                 }
                 Spacer()
             }
@@ -1382,7 +1415,7 @@ struct ScholiaModelPickerPopover: View {
             HStack(spacing: 8) {
                 Image(systemName: "magnifyingglass")
                     .foregroundStyle(.secondary)
-                TextField("Search verified models", text: $query)
+                TextField("Search models or providers", text: $query)
                     .textFieldStyle(.plain)
                     .focused($searchFocused)
                 if !query.isEmpty {
@@ -1407,10 +1440,25 @@ struct ScholiaModelPickerPopover: View {
             ScrollView {
                 LazyVStack(alignment: .leading, spacing: 3) {
                     if hasVisibleModels {
-                        ForEach(ProviderCatalog.providers) { provider in
-                            let definitions = visibleModels(for: provider)
+                        if !recentModels.isEmpty {
+                            Text("RECENTLY USED")
+                                .font(.caption2.weight(.bold))
+                                .foregroundStyle(.secondary)
+                                .padding(9)
+                            ForEach(recentModels) { recent in
+                                let provider = ProviderCatalog.provider(id: recent.providerID)
+                                if let definition = visibleModels(for: provider).first(where: { $0.id == recent.modelID }) {
+                                    modelRow(definition, provider: provider, showsProvider: true)
+                                }
+                            }
+                            Divider().padding(.vertical, 5)
+                        }
+                        ForEach(providers) { provider in
+                            let definitions = visibleModels(for: provider).filter { definition in
+                                !recentModels.contains { $0.providerID == provider.id && $0.modelID == definition.id }
+                            }
                             if !definitions.isEmpty {
-                                VStack(alignment: .leading, spacing: 0) {
+                                LazyVStack(alignment: .leading, spacing: 0) {
                                     HStack(spacing: 8) {
                                         Text(provider.name)
                                             .font(.caption2.weight(.bold))
@@ -1428,7 +1476,7 @@ struct ScholiaModelPickerPopover: View {
                                     Divider()
 
                                     ForEach(definitions) { definition in
-                                        modelButton(definition, provider: provider)
+                                        modelRow(definition, provider: provider)
                                     }
                                 }
                                 .clipShape(RoundedRectangle(cornerRadius: 9))
@@ -1438,10 +1486,10 @@ struct ScholiaModelPickerPopover: View {
                         }
                     } else {
                         ContentUnavailableView(
-                            query.isEmpty ? "No verified models" : "No verified models found",
-                            systemImage: "checkmark.shield",
+                            query.isEmpty ? "No models" : "No models found",
+                            systemImage: "magnifyingglass",
                             description: Text(query.isEmpty
-                                ? "Open Settings, select a model ID, and run Test provider."
+                                ? "Add a model ID in Provider settings to test it."
                                 : "Try a different model or provider name.")
                         )
                         .frame(maxWidth: .infinity)
@@ -1480,82 +1528,151 @@ struct ScholiaModelPickerPopover: View {
             }
 
             Divider()
-            SettingsLink {
-                Label("Manage and test models in Settings", systemImage: "gearshape")
-                    .font(.caption.weight(.semibold))
+            HStack(spacing: 8) {
+                if let attempt = model.modelVerification.activeTest {
+                    ProgressView().controlSize(.small)
+                    Text("Testing \(attempt.target.modelID)…")
+                        .font(.caption)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                    Spacer(minLength: 0)
+                    Button("Cancel") { model.cancelModelTest() }
+                        .scholiaButtonStyle(.bordered)
+                        .controlSize(.small)
+                } else {
+                    Image(systemName: "checkmark.shield")
+                    Text(model.providerTestStatus ?? "Test a model to verify access")
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                        .help(model.providerTestStatus ?? "Test a model to verify access")
+                    Spacer(minLength: 0)
+                }
             }
-            .scholiaButtonStyle(.plain)
-            .foregroundStyle(Color.accentColor)
-            .padding(10)
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .simultaneousGesture(TapGesture().onEnded { isPresented = false })
+            .font(.caption)
+            .foregroundStyle(.secondary)
+            .padding(.horizontal, 10)
+            .frame(height: 38)
+
+            if providerID == nil {
+                Divider()
+                SettingsLink {
+                    Label("Provider settings and custom models", systemImage: "gearshape")
+                        .font(.caption.weight(.semibold))
+                }
+                .scholiaButtonStyle(.plain)
+                .foregroundStyle(Color.accentColor)
+                .padding(10)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .simultaneousGesture(TapGesture().onEnded { isPresented = false })
+            }
         }
-        .frame(width: 370)
+        .frame(width: 430)
         .onAppear {
             query = ""
+            // Keep the clicked row under the pointer as verification changes.
+            // Reapply verified-first ordering the next time the picker opens.
+            displayedModels = Dictionary(uniqueKeysWithValues: providers.map {
+                ($0.id, model.availableModels(for: $0))
+            })
+            displayedRecentModels = Array(model.settings.recentModels.prefix(8))
+            model.refreshModelCatalogs()
             DispatchQueue.main.async { searchFocused = true }
+        }
+        .onChange(of: model.discoveredProviderModels) { _, _ in
+            displayedModels = Dictionary(uniqueKeysWithValues: providers.map {
+                ($0.id, model.availableModels(for: $0))
+            })
         }
         .onExitCommand { isPresented = false }
     }
 
-    private func modelButton(
+    private func modelRow(
         _ definition: ModelDefinition,
-        provider: ProviderDefinition
+        provider: ProviderDefinition,
+        showsProvider: Bool = false
     ) -> some View {
         let selected = provider.id == (usesExplainModel ? model.activeProvider.id : model.activeQuickAskProvider.id)
             && definition.id == (usesExplainModel ? model.activeModel : model.activeQuickAskModel)
-        return Button {
-            if usesExplainModel {
-                model.selectStudyModel(definition.id, providerID: provider.id)
-            } else {
-                model.setQuickAskThinkingModel(
-                    definition.id,
-                    for: model.activeQuickAskThinkingProfile,
-                    providerID: provider.id
-                )
-            }
-            isPresented = false
-        } label: {
+        let verified = model.modelIsVerified(definition.id, for: provider)
+        let testStatus = model.modelTestStatus(definition.id, for: provider)
+        return VStack(alignment: .leading, spacing: 3) {
             HStack(spacing: 9) {
-                VStack(alignment: .leading, spacing: 2) {
-                    Text(definition.label)
-                        .font(.callout.weight(selected ? .semibold : .regular))
-                        .lineLimit(1)
-                    Text(definition.id)
-                        .font(.caption2.monospaced())
-                        .foregroundStyle(.secondary)
-                        .lineLimit(1)
-                        .truncationMode(.middle)
+                Button {
+                    if usesExplainModel {
+                        model.selectStudyModel(definition.id, providerID: provider.id)
+                    } else {
+                        model.setQuickAskThinkingModel(
+                            definition.id,
+                            for: model.activeQuickAskThinkingProfile,
+                            providerID: provider.id
+                        )
+                    }
+                    isPresented = false
+                } label: {
+                    HStack(spacing: 8) {
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(definition.label)
+                                .font(.callout.weight(selected ? .semibold : .regular))
+                                .lineLimit(1)
+                            Text(showsProvider ? "\(provider.name) · \(definition.id)" : definition.id)
+                                .font(.caption2.monospaced())
+                                .foregroundStyle(.secondary)
+                                .lineLimit(1)
+                                .truncationMode(.middle)
+                            HStack(spacing: 7) {
+                                if case .failed(let message) = testStatus {
+                                    Label("Test failed", systemImage: "exclamationmark.circle")
+                                        .foregroundStyle(.red).help(message)
+                                } else {
+                                    Label(testStatus == .cancelled ? "Test cancelled" : verified ? "Verified" : "Not verified",
+                                          systemImage: verified ? "checkmark.shield.fill" : "shield")
+                                        .foregroundStyle(verified ? Color.green : Color.secondary)
+                                }
+                                if let supportsImages = definition.supportsImages {
+                                    Text(supportsImages ? "Vision" : "Text only")
+                                        .foregroundStyle(.secondary)
+                                }
+                            }
+                            .font(.caption2)
+                        }
+                        Spacer(minLength: 0)
+                        if selected {
+                            Image(systemName: "checkmark")
+                                .font(.caption.weight(.bold))
+                                .foregroundStyle(Color.accentColor)
+                        }
+                    }
+                    .contentShape(Rectangle())
                 }
-                Spacer(minLength: 8)
-                if let supportsImages = definition.supportsImages {
-                    Label(
-                        supportsImages ? "Vision" : "Text only",
-                        systemImage: supportsImages ? "eye" : "text.alignleft"
-                    )
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
+                .scholiaButtonStyle(.plain)
+                .disabled(!verified || (!usesExplainModel && model.isQuickAskStreaming))
+                .help(model.modelVerificationDetail(definition.id, for: provider)
+                    ?? "Test this model before selecting it")
+
+                Button {
+                    if let onTestModel { onTestModel(definition.id, provider.id) }
+                    else { model.testModel(definition.id, providerID: provider.id) }
+                } label: {
+                    Text(testStatus == .testing ? "Testing…" : verified ? "Retest" : "Test")
+                        .frame(width: 54)
                 }
-                if selected {
-                    Image(systemName: "checkmark.shield.fill")
-                        .font(.caption.weight(.bold))
-                        .foregroundStyle(Color.accentColor)
-                }
+                .scholiaButtonStyle(.bordered)
+                .controlSize(.small)
+                .disabled(model.isTestingProvider)
+                .accessibilityLabel("\(verified ? "Retest" : "Test") \(definition.label) with \(provider.name)")
+                .help("Send a short test request using the saved provider connection")
             }
-            .contentShape(Rectangle())
-            .padding(.horizontal, 9)
-            .padding(.vertical, 7)
-            .background(
-                selected ? Color.accentColor.opacity(0.12) : Color.clear,
-                in: RoundedRectangle(cornerRadius: 8)
-            )
         }
-        .scholiaButtonStyle(.plain)
-        .disabled(!usesExplainModel && model.isQuickAskStreaming)
+        .padding(.horizontal, 9)
+        .padding(.vertical, 7)
+        .background(
+            selected ? Color.accentColor.opacity(0.12) : Color.clear,
+            in: RoundedRectangle(cornerRadius: 8)
+        )
     }
 
     private func visibleModels(for provider: ProviderDefinition) -> [ModelDefinition] {
-        let models = model.verifiedModels(for: provider)
+        let models = displayedModels[provider.id] ?? model.availableModels(for: provider)
         let terms = normalized(query).split(whereSeparator: \.isWhitespace).map(String.init)
         guard !terms.isEmpty else { return models }
         return models.filter { definition in
@@ -1565,7 +1682,18 @@ struct ScholiaModelPickerPopover: View {
     }
 
     private var hasVisibleModels: Bool {
-        ProviderCatalog.providers.contains { !visibleModels(for: $0).isEmpty }
+        providers.contains { !visibleModels(for: $0).isEmpty }
+    }
+
+    private var recentModels: [RecentProviderModel] {
+        displayedRecentModels.filter { recent in
+            providers.contains { $0.id == recent.providerID }
+                && visibleModels(for: ProviderCatalog.provider(id: recent.providerID)).contains { $0.id == recent.modelID }
+        }
+    }
+
+    private var providers: [ProviderDefinition] {
+        ProviderCatalog.providers.filter { providerID == nil || $0.id == providerID }
     }
 
     private var activeThinkingModelIsOverridden: Bool {

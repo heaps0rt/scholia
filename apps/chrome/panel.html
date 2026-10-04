@@ -32,6 +32,11 @@
     </div>
 
     <div id="home-view" class="view home-view">
+      <section class="card compact">
+        <div class="card-heading"><span class="label">Plan your exams</span><button id="exam-planner-settings" class="text-button" type="button">Website address</button></div>
+        <p class="small-copy">Choose exam dates, keep midterms and finals together, and check for overlaps in your Scholia workspace.</p>
+        <button id="open-exam-planner" class="secondary" type="button">Open exam planner ↗</button>
+      </section>
       <section class="context-card">
         <span id="source-badge" class="badge">Current page</span>
         <h2 id="current-title">Loading current tab…</h2>
@@ -47,7 +52,7 @@
             </label>
             <label class="scope-toggle context-toggle" for="context-full">
               <input id="context-full" name="context-mode" type="radio" value="full">
-              <span><strong>Full</strong><small>Include the larger page, PDF, or site context pack, up to about 24,000 characters.</small></span>
+              <span><strong>Full</strong><small>Include entire articles and short PDFs, up to about 120,000 characters. Larger sources use relevant excerpts.</small></span>
             </label>
             <label class="scope-toggle context-toggle context-none-toggle" for="context-none">
               <input id="context-none" name="context-mode" type="radio" value="none">

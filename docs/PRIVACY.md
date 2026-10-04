@@ -45,7 +45,8 @@ Page snapshots omit scripts, styles, event handlers, live form values, Scholia
 controls, and large inline data URLs. Provider source addresses omit URL query
 parameters and fragments. Long sources are ranked locally and reduced to a
 context pack. Compact extension context is about 6,000 characters; saved ChatGPT
-context has a separate limit of about 4,000. Full allows a larger pack. **None**
+context has a separate limit of about 4,000. Extension Full includes up to 120,000 source characters and uses excerpts for
+larger sources. **None**
 omits automatic context while keeping explicit selections and attachments.
 
 Selecting text alone does not contact a model. Asking a question, choosing
@@ -152,6 +153,11 @@ clipboard-reading access. The extension does not collect form history, contacts,
 location, or financial information. Canvas requests can use a browser session
 without copying its cookies to providers or page content.
 
+Sparse extension PDF pages use bundled English/Norwegian OCR, without uploading
+page images or downloading code. Up to 50 sparse pages are processed per document,
+with a 30-second limit per recognition job. Temporary images are discarded;
+recovered text can be cached and sent as context when you ask a question.
+
 ## Mac app and local website
 
 Provider credentials and personal Canvas tokens use Keychain. Preferences use
@@ -167,11 +173,25 @@ Removing a workspace removes its library entry while retaining files and earlier
 revisions for recovery. Close Scholia before clearing library files on disk.
 Keychain credentials are separate and are not deleted with the library.
 
+Local file tools are controlled by **Settings → Privacy → Local files**. Reading
+is on by default; writing is separately off by default. When enabled, tools can
+search paths and read file contents for chat, or create folders and edit text/code.
+Names, paths, text, and images read for a question can reach the selected model.
+macOS folder permissions apply. Disabling a control blocks subsequent operations,
+including in an active answer. Background classification, practice generation,
+and model tests do not receive these tools. The local website shares native chat
+permissions; the hosted service and extension gain no Mac filesystem access.
+
 Canvas sign-in uses the app's WebKit data store; Scholia does not collect your
-institutional password. Refresh reads course metadata and submission status.
+institutional password. Canvas-host cookies are archived in device-only Keychain;
+SSO cookies are excluded. **Disconnect** clears the archive and Canvas cookies.
+Refresh reads course metadata, submission status, posted grades, and feedback.
 Opening a material downloads it; bulk-download controls fetch more. Optional
 frequent-course preloading may fetch a small batch after repeated visits and an
-idle delay. It can be disabled. Hiding an assignment changes only Scholia's list.
+idle delay. It can be disabled. Optional Canvas content updates and default-on math wiki
+updates have separate controls. Public course-site requests receive no Canvas
+credentials. Publishing-pattern statistics are learned locally and do not use a
+model. Hiding an assignment or correcting its status changes only Scholia's list.
 
 ### Desktop capture
 
@@ -231,8 +251,28 @@ There is no self-service account deletion; contact the operator for file/account
 deletion and backup retention. Contact the provider for provider-side deletion.
 
 Hosted files need server access and are not an automatic browser offline copy.
-Native desktop capture, Vision OCR, and the native practice store are not hosted
-features. [Hosting](HOSTING.md) covers operator configuration and backups.
+Hosted OCR runs locally on the server through Tesseract when available. Hosted
+practice stores account-owned questions, attempts, feedback, and review dates.
+Native desktop capture and Vision OCR remain Mac features. [Hosting](HOSTING.md) covers operator configuration and backups.
+
+## Search and exam plans
+
+Workspace search indexes readable text in a disposable `needle-v1.sqlite` cache
+beside the library, or within the hosted account's file storage. It has owner-only
+file permissions and shares the library's storage environment. Search does not
+call a model or a search provider. See [Search](SEARCH.md) for cache details.
+
+Studentweb sign-in uses a separate temporary WebKit store. The importer reads
+visible upcoming-exam rows, without inspecting login fields or submitting
+registration forms. Only course and exam fields enter the planner; names,
+student numbers, grades, and raw page content are excluded. Closing the importer
+discards its website data. Paste/file imports are parsed on your device and keep
+only reviewed schedule fields. Local plans belong to the Mac library; hosted
+plans belong to the account.
+
+**Recommend exams** sends your request and reviewed course/exam fields to the
+selected provider. It runs only when requested. The app checks returned selections
+against existing exams; applying a suggestion is a separate action.
 
 ## Security and contact
 
