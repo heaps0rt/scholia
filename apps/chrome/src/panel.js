@@ -1,3 +1,4 @@
+import { isQuickChatShortcut, responseSelectionInteractionProtected } from './ui-primitives.js';
 import { copyCodeBlock, copyText } from './clipboard.js';
 import { canvasCourseFromUrl } from './canvas-course.js';
 import { getCanvasCourseContext, loadCanvasCourseIndex } from './canvas-index.js';
@@ -50,8 +51,6 @@ import {
 import { fullPageCanvasSize } from './deep-page.js';
 import { DEFAULT_MAIL_REPLY_QUESTION } from './mail-context.js';
 import { documentLanguageLabel } from './document-language.js';
-import { isQuickChatShortcut } from './keyboard-shortcuts.js';
-import { responseSelectionInteractionProtected } from './response-selection.js';
 import { bridgeLaunchDecision } from './bridge-launch.js';
 
 // Each reader owns an independent controller; standalone panels use the same UI.
