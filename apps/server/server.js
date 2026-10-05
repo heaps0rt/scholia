@@ -3,7 +3,7 @@ import { readFile, stat } from 'node:fs/promises';
 import { resolve, extname, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { AccountStore } from './store.js';
-import { Documents, documentMime } from './documents.js';
+import { Documents, documentMime } from './documents/documents.js';
 import { Workspaces } from './workspaces.js';
 const source = dirname(fileURLToPath(import.meta.url));
 const types = {
@@ -175,6 +175,29 @@ export function createHostedServer({
           send(200, await workspaces.state(session));
           return;
         }
+        if (path === '/api/learning' && request.method === 'GET') {
+          send(200, workspaces.learning.view(workspaces.account(session.user_id), session.navigation));
+          return;
+        }
+        if (path === '/api/learning' && request.method === 'POST') {
+          send(200, await workspaces.learningAction(session, await body(request, 100_000)));
+          return;
+        }
+        if (path === '/api/search' && request.method === 'GET') {
+          const params = new URL(request.url, origin).searchParams;
+          const controller = new AbortController();
+          const disconnected = () => { if (!response.writableEnded) controller.abort(); };
+          response.once('close', disconnected);
+          try {
+            const result = await workspaces.search.search(workspaces.account(session.user_id), params.get('q') || '', {
+              courseID: params.get('courseID') || '', mode: params.get('mode') || 'all', signal: controller.signal,
+            });
+            if (!response.destroyed) send(200, result);
+          } catch (error) {
+            if (!controller.signal.aborted) throw error;
+          } finally { response.removeListener('close', disconnected); }
+          return;
+        }
         const match = path.match(
           /^\/api\/(document|index|edit|image)\/([\da-f-]{36})(?:\/([^/]+))?$/i
         );
@@ -193,6 +216,21 @@ export function createHostedServer({
               await documents.image(account.id, doc, decodeURIComponent(match[3] || '')),
               'image/png'
             );
+          return;
+        }
+        if (path === '/api/exam-recommendation' && request.method === 'POST') {
+          if (uploads >= 8) throw httpError(503, 'The server is busy. Try again shortly.');
+          uploads++;
+          const controller = new AbortController();
+          const disconnected = () => { if (!response.writableEnded) controller.abort(); };
+          response.once('close', disconnected);
+          try {
+            const result = await workspaces.recommendExams(session, await body(request, 500_000), controller.signal);
+            if (!response.destroyed) send(200, result);
+          } finally {
+            response.removeListener('close', disconnected);
+            uploads--;
+          }
           return;
         }
         if (path === '/api/action' && request.method === 'POST') {

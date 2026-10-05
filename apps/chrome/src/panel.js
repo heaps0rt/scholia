@@ -20,29 +20,30 @@ import {
   providerSupportsFastMode,
   providerSupportsWebSearch
 } from '../../../packages/core/src/providers.js';
-import { CHAT_HISTORY_KEY, clearChats, deleteChat, getChat, listChats, saveChat } from './chat-history.js';
+import { CHAT_HISTORY_KEY, clearChats, deleteChat, getChat, listChats, saveChat } from './chat/chat-history.js';
 import {
   canExplainImageDirectly,
   createUserTurn,
   DEFAULT_IMAGE_EXPLANATION,
   normalizeSelectionAttachment,
   requestConversation
-} from './chat-turn.js';
-import { assertPdfSize, extractPdfContext, fetchPdfBlob } from './pdf-context.js';
+} from './chat/chat-turn.js';
+import { assertPdfSize, extractPdfContext, fetchPdfBlob } from './pdf/pdf-context.js';
 import { clipboardImageFile, normalizeImageFile } from './image-input.js';
 import { currentSelectionCapture } from './page-capture.js';
-import { renderMarkdown, renderReasoning } from './render.js';
-import { buildResponseLayerContext } from './response-layers.js';
-import { prepareEditedResend, replaceConversationPrefix } from './chat-edit.js';
+import { renderMarkdown, renderReasoning, renderActivity, addActivity, bindActivityDisclosure } from './render.js';
+import { buildResponseLayerContext } from './chat/response-layers.js';
+import { prepareEditedResend, replaceConversationPrefix } from './chat/chat-edit.js';
 import {
   MAX_CHAT_SEARCH_RESULTS,
   matchingMessageIndexes,
   movedSearchIndex,
   searchRanges
-} from './chat-search.js';
-import { dedicatedChatId, dedicatedChatUrl } from './chat-page.js';
+} from './chat/chat-search.js';
+import { dedicatedChatId, dedicatedChatUrl } from './chat/chat-page.js';
 import { sendRuntimeMessage as sendPanelMessage } from './runtime-message.js';
 import { parseModelChoice, populateModelSelect } from './model-select.js';
+import { RECENT_MODELS_KEY } from '../../../packages/core/src/recent-models.js';
 import {
   pageSelectionStorageKey,
   PANEL_NAVIGATION_KEY,
@@ -52,6 +53,7 @@ import { fullPageCanvasSize } from './deep-page.js';
 import { DEFAULT_MAIL_REPLY_QUESTION } from './mail-context.js';
 import { documentLanguageLabel } from './document-language.js';
 import { bridgeLaunchDecision } from './bridge-launch.js';
+import { openExamPlanner } from './exam-planner-launch.js';
 
 // Each reader owns an independent controller; standalone panels use the same UI.
 export function mountChatPanel({ root = globalThis.document, embeddedPdf = false, initialChatId = '', close = () => {} } = {}) {
@@ -77,6 +79,7 @@ const embeddedPdfPanel = embeddedPdf || new URLSearchParams(location.search).get
 const PDF_LEARNING_MODE_KEY = 'scholia.pdf-learning-mode.v1';
 const elements = Object.fromEntries([
   'bridge-bar', 'bridge-status', 'bridge-start', 'bridge-copy',
+  'open-exam-planner', 'exam-planner-settings',
   'home-brand', 'back-home', 'expand-chat', 'chat-search-toggle', 'new-chat', 'settings', 'model-settings', 'model-select',
   'fast-mode', 'fast-mode-state', 'web-search', 'web-search-state', 'learning-mode', 'learning-mode-state', 'model-hint',
   'context-mode', 'context-full', 'context-none', 'chat-context-mode', 'chat-context-full', 'chat-context-none', 'chat-model-select', 'chat-fast-mode', 'chat-web-search', 'chat-learning-mode',
@@ -290,10 +293,10 @@ function renderContextHint() {
     : pdf
       ? compactContextEnabled
         ? 'The PDF is read locally, ranked for this question, and compressed to about 6,000 source characters.'
-        : 'Full mode sends the PDF source with the previous larger context budget (up to about 24,000 characters).'
+        : 'Full mode includes the entire extracted text of articles and short PDFs, up to about 120,000 characters. Larger PDFs use relevant excerpts.'
       : compactContextEnabled
         ? 'Compact mode reads this page and sends about 6,000 question-relevant source characters.'
-        : 'Full mode sends the current page with the previous larger context budget (up to about 24,000 characters).';
+        : 'Full mode includes entire articles and pages, up to about 120,000 characters. Larger pages use relevant excerpts.';
 }
 
 async function refreshSettings() {
@@ -755,6 +758,7 @@ function persistCurrentChat() {
       role: entry.role,
       content: entry.content,
       ...(entry.reasoning ? { reasoning: entry.reasoning } : {}),
+      ...(entry.activity?.length ? { activity: entry.activity } : {}),
       ...(entry.meta ? { meta: entry.meta } : {}),
       ...(entry.error ? { error: true } : {}),
       ...(entry.attachment ? { attachment: { ...entry.attachment } } : {}),
@@ -1096,9 +1100,10 @@ function renderResponseWindowMessages({ restoreScroll = false, forceBottom = fal
     bubble.className = 'bubble';
     if (entry.role === 'user') appendFileChips(bubble, entry.files);
     if (entry.role === 'assistant' && !entry.error) {
-      bubble.innerHTML = renderReasoning(entry.reasoning, { streaming: entry.streaming })
+      bubble.innerHTML = renderActivity(entry.activity) + renderReasoning(entry.reasoning, { streaming: entry.streaming })
         + renderMarkdown(entry.content)
         + (entry.streaming ? '<span class="caret" aria-label="Writing"></span>' : '');
+      bindActivityDisclosure(bubble, entry);
     } else if (entry.role === 'user' && state?.editingMessageIndex === index) {
       appendTurnImage(bubble, entry);
       row.classList.add('is-editing');
@@ -1323,6 +1328,9 @@ function askResponseWindow(question, options = responseFiles.options) {
     if (event.type === 'token') {
       assistant.content += event.token || '';
       scheduleResponseWindowRender(state);
+    } else if (event.type === 'activity') {
+      addActivity(assistant, event.activity);
+      scheduleResponseWindowRender(state);
     } else if (event.type === 'reasoning') {
       assistant.reasoning = `${assistant.reasoning || ''}${event.token || ''}`;
       scheduleResponseWindowRender(state);
@@ -1487,7 +1495,9 @@ async function contextDescriptor(
 }
 
 function updatePdfProgress(progress) {
-  if (progress.phase === 'download' || progress.phase === 'load') {
+  if (progress.phase === 'ocr') {
+    showLoading('Reading scanned text locally…', `OCR page ${progress.page} of ${progress.total}`);
+  } else if (progress.phase === 'download' || progress.phase === 'load') {
     const loaded = `${(progress.loaded / 1024 / 1024).toFixed(1)} MB`;
     const total = progress.total ? ` of ${(progress.total / 1024 / 1024).toFixed(1)} MB` : '';
     showLoading(progress.phase === 'download' ? 'Downloading PDF locally…' : 'Reading PDF data locally…', `${loaded}${total}`);
@@ -1530,6 +1540,7 @@ async function pdfCapture(source, { question, selection, imageDataUrl, pdfInput 
       context: source.context,
       outline: '',
       title: source.pageTitle,
+      ocrNotice: source.ocrNotice,
       pageCount: Math.max(0, Number(source.pageCount) || 0),
       extractedCharacters: Math.max(0, Number(source.extractedCharacters) || Number(source.rawContextCharacters) || 0),
       truncated: Number(source.extractedPageCount) > 0 && Number(source.extractedPageCount) < Number(source.pageCount)
@@ -1565,7 +1576,7 @@ async function pdfCapture(source, { question, selection, imageDataUrl, pdfInput 
     selection,
     imageDataUrl: visual,
     context: packed,
-    contextNotice: notice || (source.fileHandleId ? 'Local PDF file' : shortSourceUrl(source.url)),
+    contextNotice: [notice || (source.fileHandleId ? 'Local PDF file' : shortSourceUrl(source.url)), extracted.ocrNotice].filter(Boolean).join(' · '),
     contextState: state
   });
 }
@@ -2094,6 +2105,9 @@ async function ask(
     if (event.type === 'token') {
       assistant.content += event.token || '';
       scheduleRender();
+    } else if (event.type === 'activity') {
+      addActivity(assistant, event.activity);
+      scheduleRender();
     } else if (event.type === 'reasoning') {
       assistant.reasoning = `${assistant.reasoning || ''}${event.token || ''}`;
       scheduleRender();
@@ -2346,9 +2360,10 @@ function renderMessages() {
     bubble.className = 'bubble';
     if (entry.role === 'user') appendFileChips(bubble, entry.files);
     if (entry.role === 'assistant' && !entry.error) {
-      bubble.innerHTML = renderReasoning(entry.reasoning, { streaming: entry.streaming })
+      bubble.innerHTML = renderActivity(entry.activity) + renderReasoning(entry.reasoning, { streaming: entry.streaming })
         + renderMarkdown(entry.content)
         + (entry.streaming ? '<span class="caret" aria-label="Writing"></span>' : '');
+      bindActivityDisclosure(bubble, entry);
     } else if (entry.role === 'user' && editingMessageIndex === index) {
       row.classList.add('is-editing');
       appendTurnImage(bubble, entry);
@@ -2976,7 +2991,18 @@ window.addEventListener('pagehide', () => {
   bridgeStatusRequest += 1;
 });
 elements.settings.addEventListener('click', () => chrome.runtime.openOptionsPage());
+elements['exam-planner-settings']?.addEventListener('click', () => chrome.runtime.openOptionsPage());
+elements['open-exam-planner']?.addEventListener('click', () => {
+  openExamPlanner().catch((error) => showStatus(error.message, true));
+});
 elements['model-settings'].addEventListener('click', () => chrome.runtime.openOptionsPage());
+for (const select of [elements['model-select'], elements['chat-model-select']]) {
+  select.addEventListener('scholia-model-picker-open', () => {
+    for (const provider of ['codex', 'opencode']) {
+      void message({ type: 'SCHOLIA_BRIDGE_STATUS', provider, timeoutMs: 1000 }).catch(() => {});
+    }
+  });
+}
 elements['model-select'].addEventListener('change', () => saveInlineModel());
 elements['context-mode'].addEventListener('change', () => {
   if (elements['context-mode'].checked) setContextMode(CONTEXT_MODE_COMPACT);
@@ -3220,7 +3246,7 @@ elements['composer-form'].addEventListener('submit', (event) => {
 });
 
 chrome.storage.onChanged.addListener((changes, area) => {
-  if (area === 'local' && changes[SETTINGS_KEY]) refreshSettings().catch(() => {});
+  if (area === 'local' && (changes[SETTINGS_KEY] || changes[RECENT_MODELS_KEY])) refreshSettings().catch(() => {});
   if (area === 'local' && changes[CHAT_HISTORY_KEY]) {
     refreshChatHistory().catch(() => {});
     syncCurrentChatFromHistory().catch(() => {});

@@ -61,7 +61,9 @@ conversation attaches it to the next turn without replacing that source.
 
 - **Compact** ranks relevant page, PDF, course, or site text locally and sends
   about 6,000 characters of automatic context.
-- **Full** allows a larger source pack, up to about 24,000 characters.
+- **Full** includes articles and short PDFs up to 120,000 extracted source
+  characters, with page boundaries. Larger sources use excerpts. Saved chats
+  retain that context.
 - **None** omits automatic context and keeps your conversation and attachments.
 
 **Complete page** scrolls to load content, gathers readable text and a bounded
@@ -142,6 +144,14 @@ only for that session. PDF text indexes are cached locally by document
 fingerprint. Documents up to 1 GB are accepted, but large files can take time to
 index and render. PDF.js, its workers, fonts, and image decoders are bundled.
 
+Sparse PDF pages and attachments use bundled English/Norwegian OCR. It processes
+up to 50 sparse pages per document with a 30-second limit per recognition job.
+Recovered text keeps its page numbers and joins the local search/context cache.
+Skipped or unreadable pages are reported; the original PDF is unchanged.
+
+**Exam planner** opens the study website configured in extension settings. Start
+**Open in Browser** in the Mac app first when using its local website.
+
 Region capture covers the visible page or PDF viewport. Drag to select an area
 or press Escape to cancel. Browser internal pages and the Web Store restrict
 extension access.
@@ -165,6 +175,7 @@ npm run bridge:install:opencode
 Each accepts `-- --port N` or `-- --uninstall`. Node.js and the chosen CLI must
 be installed. To start Codex or Claude directly, use `npm run bridge:codex` or
 `npm run bridge:claude`; opencode uses `opencode serve --port 4096`.
+Rerun the installer if the source folder or launcher paths change.
 
 Disable Scholia for a site from the popup or toolbar. Allowlist mode keeps it
 inactive except on the hostnames you choose.
@@ -174,8 +185,8 @@ inactive except on the hostnames you choose.
 Browser verification uses Chromium. After building:
 
 ```sh
-node scripts/smoke-chromium-region.mjs
-node scripts/smoke-chromium-history.mjs
+node scripts/smoke/browser/smoke-chromium-region.mjs
+node scripts/smoke/browser/smoke-chromium-history.mjs
 npm run smoke:chromium:recursion
 ```
 
@@ -197,16 +208,17 @@ images, regions, pages, and PDFs with the user's chosen provider. Suggested
 short description: “Select text, math, or a screen region and get a contextual
 AI explanation.”
 
-| Permission       | Use                                                                        |
-| ---------------- | -------------------------------------------------------------------------- |
-| `activeTab`      | User-requested page reading and region capture                             |
-| `alarms`         | Optional scheduled ChatGPT memory refresh                                  |
-| `contextMenus`   | Explain and Capture commands                                               |
-| `clipboardWrite` | Copy code buttons                                                          |
-| `scripting`      | Connect the ChatGPT context probe to an already-open tab                   |
-| `storage`        | Settings, credentials, access rules, and saved chats                       |
-| `sidePanel`      | Contextual chat beside the page                                            |
-| `<all_urls>`     | Selection controls, requested page/PDF/site context, and provider requests |
+| Permission       | Use                                                                           |
+| ---------------- | ----------------------------------------------------------------------------- |
+| `activeTab`      | User-requested page reading and region capture                                |
+| `offscreen`      | Bundled local OCR for scanned PDFs, including attachments on restricted pages |
+| `alarms`         | Optional scheduled ChatGPT memory refresh                                     |
+| `contextMenus`   | Explain and Capture commands                                                  |
+| `clipboardWrite` | Copy code buttons                                                             |
+| `scripting`      | Connect the ChatGPT context probe to an already-open tab                      |
+| `storage`        | Settings, credentials, access rules, and saved chats                          |
+| `sidePanel`      | Contextual chat beside the page                                               |
+| `<all_urls>`     | Selection controls, requested page/PDF/site context, and provider requests    |
 
 Before submitting, publish the [privacy policy](../../docs/PRIVACY.md), complete
 the store's privacy questionnaire to match extension behavior, provide toolbar

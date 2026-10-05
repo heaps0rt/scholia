@@ -1,19 +1,29 @@
-import { StudyPDFReader } from './pdf-reader.js';
-import { StudyNotebookReader } from './notebook-reader.js';
-import { StudyDocumentEditor, canEditDocument } from './document-editor.js';
+import { StudyPDFReader } from './reader/pdf-reader.js';
+import { studyModelPickerMarkup } from './chat/model-picker.js';
+import { StudyNotebookReader } from './reader/notebook-reader.js';
+import { StudyDocumentEditor, canEditDocument } from './reader/document-editor.js';
 import { renderMarkdown, escapeHtml as esc } from '../chrome/src/render.js';
 import {
   courseLibraryMarkup,
+  workspacePanelMarkup,
   courseDisplayName,
   courseLibraryRenderKey,
   catalogChangeSummary,
-} from './course-library.js';
+} from './workspace/course-library.js';
 import { installHostedAccount } from './hosted-account.js';
-import { installTutorResize } from './workspace-resize.js';
-import { materialGroupsMarkup, materialsViewMarkup, materialViewPicker } from './materials.js';
-import { assignmentsMarkup, selectedAssignment, assignmentPageMarkup } from './assignments.js';
+import { installTutorResize } from './workspace/workspace-resize.js';
+import { materialGroupsMarkup, materialsViewMarkup, materialViewPicker } from './workspace/materials.js';
+import {
+  assignmentsMarkup,
+  selectedAssignment,
+  assignmentPageMarkup,
+  assignmentAgendaMarkup,
+} from './workspace/assignments.js';
 import {
   teachingModes,
+  coursePrompts,
+  conversationScope,
+  courseCoverage,
   studyPrompt,
   appendStudyPrompt,
   recentReadings,
@@ -21,14 +31,82 @@ import {
   readerRenderKey,
   studyPollDelay,
   studyRenderKey,
-} from './study-session.js';
-import { StudyConversation } from './study-conversation.js';
-import { StudyPractice } from './practice.js';
-import './style.css';
-import './dashboard.css';
-import './assignment-page.css';
+} from './workspace/study-session.js';
+import { StudyConversation } from './chat/study-conversation.js';
+import { StudyPractice } from './practice/practice.js';
+import { courseLinkTarget, isHTMLDocument, safeDocumentURL, restoreCourseLinks, originalDocumentHTML } from '../../packages/core/src/course-documents.js';
+import { installWorkspaceSearch } from './workspace/workspace-search.js';
+import { installExamPlanner } from './exams/exam-planner.js';
+import './styles/style.css';
+import './styles/dashboard.css';
+import './styles/assignment-page.css';
+import './styles/exam-planner.css';
+import './styles/navigation.css';
 
 const $ = (selector) => document.querySelector(selector);
+const compactNavigation = window.matchMedia('(max-width: 850px)');
+let navigationOpener;
+function setSidebarOpen(open, { restoreFocus = true } = {}) {
+  open = !!open && compactNavigation.matches;
+  const sidebar = $('#course-navigation');
+  const wasOpen = $('.app').classList.contains('sidebar-open');
+  if (open && !wasOpen) navigationOpener = document.activeElement;
+  $('.app').classList.toggle('sidebar-open', open);
+  $('.sidebar-scrim').hidden = !open;
+  $('#main-content').inert = open;
+  $('.mobile-menu').setAttribute('aria-expanded', String(open));
+  $('.mobile-menu').setAttribute('aria-label', open ? 'Close navigation' : 'Open navigation');
+  if (open) {
+    sidebar.setAttribute('role', 'dialog');
+    sidebar.setAttribute('aria-modal', 'true');
+    $('.sidebar-close').focus({ preventScroll: true });
+  } else {
+    sidebar.removeAttribute('role');
+    sidebar.removeAttribute('aria-modal');
+    if (wasOpen && restoreFocus) {
+      const target = navigationOpener?.isConnected ? navigationOpener : $('.mobile-menu');
+      target.focus({ preventScroll: true });
+    }
+  }
+}
+compactNavigation.addEventListener('change', () => {
+  const focused = document.activeElement;
+  setSidebarOpen(false, { restoreFocus: false });
+  if (focused === $('.sidebar-close') && !compactNavigation.matches)
+    $('.sidebar .nav-all').focus({ preventScroll: true });
+  else if (compactNavigation.matches && $('#course-navigation').contains(focused))
+    $('.mobile-menu').focus({ preventScroll: true });
+});
+document.addEventListener('keydown', (event) => {
+  if (!$('.app').classList.contains('sidebar-open') || $('dialog[open]')) return;
+  if (event.key === 'Escape') {
+    event.preventDefault();
+    setSidebarOpen(false);
+  } else if (event.key === 'Tab') {
+    const items = [
+      ...$('#course-navigation').querySelectorAll(
+        'a[href], button:not(:disabled), input:not(:disabled), select:not(:disabled), summary, [tabindex="0"]'
+      ),
+    ].filter((item) => item.getClientRects().length);
+    const first = items[0],
+      last = items.at(-1);
+    if (
+      event.shiftKey &&
+      (document.activeElement === first ||
+        !$('#course-navigation').contains(document.activeElement))
+    ) {
+      event.preventDefault();
+      last?.focus();
+    } else if (
+      !event.shiftKey &&
+      (document.activeElement === last || !$('#course-navigation').contains(document.activeElement))
+    ) {
+      event.preventDefault();
+      first?.focus();
+    }
+  }
+});
+if (!/Mac|iPhone|iPad/.test(navigator.platform)) $('.action-search kbd').textContent = 'Ctrl K';
 installTutorResize($('#workspace'), $('#tutor-divider'));
 const hosted = !!document.querySelector('meta[name="scholia-hosted"]');
 const accountID = document.querySelector('meta[name="scholia-account"]')?.content || 'local';
@@ -40,6 +118,7 @@ let state,
   lastNavigation = '',
   lastMessages = '',
   lastModels = '';
+let lastReasoning = '';
 let lastAssignment = '';
 let closedSections;
 try {
@@ -58,6 +137,7 @@ function persistSections() {
   } catch {}
 }
 let materialViews;
+const readingViews = new Set();
 try {
   materialViews =
     JSON.parse(localStorage.getItem(preferenceKey('scholia.materialViews')) || '{}') || {};
@@ -75,9 +155,13 @@ let courseQuery = '',
   materialQuery = '',
   selectedText = '',
   imageData = null;
-let includeCompletedAssignments = false;
+let includeCompletedAssignments = true;
 let agendaQuery = '',
   agendaFilter = 'due';
+let assignmentsPageFilter = 'all';
+const showingAssignments = () => state?.showingLibrary && state.library.courseLibraryView === 'assignments';
+let agendaNeedsTodayFocus = true;
+let dashboardPanel = 'workspaces';
 let pdfReader,
   notebookReader,
   readerGeneration = 0,
@@ -112,7 +196,28 @@ let lastComposerText, lastComposerWidth;
 const course = () =>
   state?.library.courses.find((item) => item.id === state.library.selectedCourseID);
 const doc = () => course()?.documents.find((item) => item.id === state.library.selectedDocumentID);
+const examPlanner = installExamPlanner({
+  getState: () => state,
+  save: (values) => action('examPlan', values),
+  recommend: (values, signal) => request('/api/exam-recommendation', values, signal),
+  reload: async () => { await actionQueue; update(await request('/api/state')); },
+  signIn: hosted ? null : () => action('studentweb'),
+  notify,
+});
+const workspaceSearch = installWorkspaceSearch({
+  request,
+  getState: () => state,
+  notify,
+  onOpen: async (hit) => {
+    await navigate('course', { id: hit.courseID });
+    if (hit.documentID) await navigate('source', { id: hit.documentID, page: hit.page || 1 });
+    else if (hit.kind === 'assignments')
+      await navigate('assignment', { id: hit.materialID, courseID: hit.courseID });
+    else await action('material', { id: hit.materialID, courseID: hit.courseID });
+  },
+});
 const practice = new StudyPractice({
+  accountID,
   dialog: $('#practice-dialog'),
   request,
   getState: () => state,
@@ -122,16 +227,17 @@ const practice = new StudyPractice({
     await navigate('course', { id: question.source.courseID });
     await navigate('source', { id: question.source.documentID, page: question.source.page });
   },
-  onExplain: async (question) => {
+  onExplain: async (question, attempts = []) => {
     await navigate('course', { id: question.source.courseID });
     await navigate('source', { id: question.source.documentID, page: question.source.page });
     await navigate('newThread');
-    $('#question').value =
-      `Explain this practice question with a worked example:\n${question.prompt}\n\nReference solution:\n${question.referenceAnswer || ''}`;
+    const attempt = attempts.filter((item) => item.questionID === question.id).at(-1);
+    $('#question').value = `Help me understand this practice question without giving away the solution:\n${question.prompt}`
+      + (attempt ? `\n\nMy attempt:\n${attempt.answer}\n\nHelp me find the first gap in my reasoning.` : '\n\nExplain the relevant concept and give me one starting hint.');
     draftDirty = true;
     draftOwner = state.draftOwner;
     persistBrowserDraft();
-    await saveDraft('Explain');
+    await saveDraft('Guide me');
   },
 });
 function persistBrowserDraft() {
@@ -147,12 +253,8 @@ function persistBrowserDraft() {
   }
 }
 
-const remoteMaterials = (item) =>
-  (item.canvasMaterials || []).filter(
-    (material) => !item.documents.some((document) => document.sourceKey === material.id)
-  );
-const button = (label, action, id = '', cls = '') =>
-  `<button class="${cls}" data-action="${action}" data-id="${esc(id)}">${label}</button>`;
+const button = (label, action, id = '', cls = '', accessibleLabel = '') =>
+  `<button class="${cls}" data-action="${action}" data-id="${esc(id)}"${accessibleLabel ? ` aria-label="${esc(accessibleLabel)}"` : ''}>${label}</button>`;
 const safeURL = (value) => {
   try {
     const url = new URL(value);
@@ -286,6 +388,9 @@ function update(next) {
   if (!draftDirty) draftOwner = state.draftOwner;
   $('#review-due').textContent = `Review due${state.reviewDue ? ` (${state.reviewDue})` : ''}`;
   $('#practice-this').hidden = state.showingLibrary || !course();
+  $('.sidebar-review').textContent = $('#review-due').textContent;
+  $('.sidebar-review').hidden = false;
+  $('.sidebar-practice').hidden = state.showingLibrary || !course();
   const context = `${state.library.selectedCourseID}:${state.library.selectedAssignmentID}:${state.library.selectedDocumentID}:${state.library.selectedThreadID}`;
   if (context !== previousContext) {
     // Native navigation takes effect in this view too; unsaved browser typing is
@@ -311,12 +416,14 @@ function update(next) {
     state.library.selectedAssignmentID,
     state.library.selectedThreadID,
     state.showingLibrary,
+    state.library.courseLibraryView,
     state.busy,
   ]);
   if (navigation !== lastNavigation) {
     renderNavigation();
     lastNavigation = navigation;
   }
+  examPlanner.refresh();
   $('#library').hidden = !state.showingLibrary;
   $('#workspace').hidden = state.showingLibrary;
   $('#add-document').hidden = state.showingLibrary;
@@ -334,14 +441,17 @@ function update(next) {
       document.unreadablePages,
     ]),
     state.assignmentNotice,
-    state.busy,
+    state.assignmentPreparing,
+    state.assignmentPreparingFileID,
     doc()?.sourceKey,
   ]);
   if (assignmentKey !== lastAssignment) {
     const sameAssignment =
       $('#assignment-page').dataset.assignment === `${course()?.id}:${assignment?.id}`;
     const expanded = $('.assignment-instructions')?.open;
-    $('#assignment-page').innerHTML = assignment ? assignmentPageMarkup(state) : '';
+    $('#assignment-page').innerHTML = assignment
+      ? assignmentPageMarkup(state, { closed: closedSections })
+      : '';
     $('#assignment-page').dataset.assignment = `${course()?.id}:${assignment?.id}`;
     if (sameAssignment && expanded !== undefined && $('.assignment-instructions'))
       $('.assignment-instructions').open = expanded;
@@ -370,16 +480,21 @@ function update(next) {
     else renderReader().catch((error) => notify(error.message));
     lastLayout = layout;
   }
-  const title = state.showingLibrary
+  const title = examPlanner.isOpen() ? 'Exam dates' : showingAssignments() ? 'Assignments' : state.showingLibrary
     ? 'Dashboard'
     : course()?.code || course()?.name || 'Your study space';
+  const currentTitle = !examPlanner.isOpen() && (assignment?.title || (!state.showingLibrary && doc()?.title));
   $('#breadcrumb').innerHTML =
-    `${button(esc(title), state.showingLibrary ? 'library' : 'materials')}${assignment ? `<span>›</span>${esc(assignment.title)}` : doc() && !state.showingLibrary ? `<span>›</span>${esc(doc().title)}` : ''}`;
+    `${button(esc(title), showingAssignments() ? 'assignments' : state.showingLibrary ? 'library' : 'materials', '', 'breadcrumb-parent')}${currentTitle ? `<span class="breadcrumb-separator" aria-hidden="true">/</span><span class="breadcrumb-current" aria-current="page" title="${esc(currentTitle)}">${esc(currentTitle)}</span>` : ''}`;
+  if (!currentTitle) $('#breadcrumb .breadcrumb-parent').setAttribute('aria-current', 'page');
   const messages = studyRenderKey([
     state.messages,
     state.sources,
     state.streaming,
+    state.answerStartedAt,
+    state.streaming ? Math.floor(Date.now() / 1000) : null,
     state.library.selectedThreadID,
+    conversationScope(state),
   ]);
   if (messages !== lastMessages) {
     renderMessages();
@@ -387,17 +502,7 @@ function update(next) {
   }
   const models = studyRenderKey([state.models, state.providerID, state.modelID]);
   if (models !== lastModels) {
-    const groups = new Map();
-    for (const model of state.models) {
-      if (!groups.has(model.provider)) groups.set(model.provider, []);
-      groups.get(model.provider).push(model);
-    }
-    $('#model-picker').innerHTML = [...groups]
-      .map(
-        ([provider, models]) =>
-          `<optgroup label="${esc(provider)}">${models.map((model) => `<option value="${esc(JSON.stringify([model.providerID, model.id]))}" ${model.id === state.modelID && model.providerID === state.providerID ? 'selected' : ''}>${esc(model.label)}</option>`).join('')}</optgroup>`
-      )
-      .join('');
+    $('#model-picker').innerHTML = studyModelPickerMarkup(state.models, state.providerID, state.modelID);
     if (!state.models.length)
       $('#model-picker').innerHTML = '<option>Set up a model in the Mac app</option>';
     if (
@@ -410,6 +515,23 @@ function update(next) {
       );
     lastModels = models;
   }
+  const activeModel = state.models.find(
+    (model) => model.id === state.modelID && model.providerID === state.providerID
+  );
+  const reasoning = studyRenderKey([activeModel, state.reasoningEffort]);
+  if (reasoning !== lastReasoning) {
+    const efforts = activeModel?.reasoningEfforts || [];
+    $('#reasoning-control').hidden = !efforts.length;
+    $('#reasoning-picker').innerHTML = efforts
+      .map(
+        (effort) =>
+          `<option value="${esc(effort)}">${esc(effort === 'xhigh' ? 'Extra high' : effort[0].toUpperCase() + effort.slice(1))}</option>`
+      )
+      .join('');
+    $('#reasoning-picker').value =
+      state.reasoningEffort || activeModel?.defaultReasoningEffort || efforts[0] || '';
+    lastReasoning = reasoning;
+  }
   document.querySelectorAll('[data-mode]').forEach((el) => {
     el.classList.toggle('active', el.dataset.mode === state.mode);
     el.setAttribute('aria-pressed', el.dataset.mode === state.mode);
@@ -417,21 +539,44 @@ function update(next) {
   });
   $('#mode-description').textContent =
     teachingModes.find((item) => item.mode === state.mode)?.summary || '';
-  $('#include-course').checked = state.includeCourse;
-  $('#context-label').textContent = selectedAssignment(state)
-    ? 'Assignment instructions + included files'
-    : doc()?.kind === 'notebook'
-      ? `Cell ${state.page} + full notebook context`
-      : doc()
-        ? `${['code', 'office'].includes(doc().kind) ? 'Section' : 'Page'} ${state.page} + document context`
-        : 'Downloaded course materials';
+  const courseScope = conversationScope(state) === 'course';
+  $('#conversation-scope').textContent = courseScope
+    ? 'Course conversation'
+    : conversationScope(state) === 'assignment'
+      ? 'Assignment conversation'
+      : 'Reading conversation';
+  $('#change-scope').hidden = courseScope && !doc();
+  $('#change-scope').textContent = courseScope ? 'Ask about this reading' : 'Ask about this course';
+  $('#change-scope').dataset.action = courseScope ? 'askReading' : 'askCourse';
+  $('#question').placeholder = courseScope
+    ? 'Ask about this course, its topics or deadlines…'
+    : 'Ask about what you’re reading…';
+  $('#include-course').checked = courseScope || state.includeCourse;
+  $('#include-course-option').hidden = courseScope;
+  $('#context-description').textContent = courseScope
+    ? 'Your course details, material titles, and saved assignment deadlines and status are included, together with relevant passages from saved readings. Unopened materials provide titles and metadata only.'
+    : 'Questions include this reading and your selected text. Relevant pages are chosen from long documents. Assignment conversations also include their instructions and readable attached files.';
+  $('#context-coverage').textContent = courseScope
+    ? `${courseCoverage(course())} Refresh Canvas when you need the latest course information.`
+    : 'Open cloud materials to include their contents. Turn on course materials to connect this reading with the rest of the course.';
+  $('#context-label').textContent = courseScope
+    ? `Whole course${course()?.code ? ` · ${course().code}` : ''}`
+    : selectedAssignment(state)
+      ? 'Assignment instructions + included files'
+      : doc()?.kind === 'notebook'
+        ? `Cell ${state.page} + full notebook context`
+        : doc()
+          ? `${['code', 'office'].includes(doc().kind) ? 'Section' : 'Page'} ${state.page} + document context`
+          : 'Course information + saved readings';
   $('#context-summary').textContent = state.context || '';
   $('#canvas-account').textContent = state.library.canvasUserName || 'Bring your courses along';
   updateAccount(state);
   $('#canvas-origin').value =
     document.activeElement === $('#canvas-origin')
       ? $('#canvas-origin').value
-      : state.library.canvasOrigin;
+      : state.library.canvasOrigin || 'https://canvas.ntnu.no';
+  $('#canvas-connection-status').textContent = state.canvasConnectionStatus || (hosted ? '' : 'Your saved login is checked first. A sign-in window opens only if Canvas needs you to sign in again.');
+  $('#canvas-dialog [data-action=signIn]').disabled = state.busy || state.canvasChecking;
   $('#canvas-notices').innerHTML = [state.status, ...state.warnings]
     .filter(Boolean)
     .map((line) => `<p>${esc(line)}</p>`)
@@ -457,13 +602,18 @@ function renderNavigation() {
   $('#course-count').hidden = !state.showingLibrary;
   $('#workspace-heading').hidden = !state.showingLibrary;
   $('#workspace-heading').innerHTML =
-    `${button(`${closedSections.has('workspaces') ? '›' : '⌄'} YOUR WORKSPACES`, 'collapseWorkspaces', '', 'section-toggle')}${button('+', 'create')}`;
+    `${button(`${closedSections.has('workspaces') ? '›' : '⌄'} YOUR WORKSPACES`, 'collapseWorkspaces', '', 'section-toggle')}${button('+', 'create', '', '', 'Create workspace')}`;
   $('#workspace-heading .section-toggle').setAttribute(
     'aria-expanded',
     !closedSections.has('workspaces')
   );
   $('#course-nav').hidden = state.showingLibrary && closedSections.has('workspaces');
   $('.nav-all').classList.toggle('workspace-back', !state.showingLibrary);
+  if (state.showingLibrary && !showingAssignments() && !examPlanner.isOpen()) $('.nav-all').setAttribute('aria-current', 'page');
+  else $('.nav-all').removeAttribute('aria-current');
+  const assignmentsNav = $('.sidebar [data-action=assignments]');
+  if (showingAssignments() && !examPlanner.isOpen()) assignmentsNav.setAttribute('aria-current', 'page');
+  else assignmentsNav.removeAttribute('aria-current');
   $('.nav-all > span:first-child').textContent = state.showingLibrary ? '▦' : '←';
   const sorted = [...state.library.courses].sort(
     (a, b) => Number(!!b.favorite) - Number(!!a.favorite) || a.name.localeCompare(b.name)
@@ -484,18 +634,23 @@ function renderNavigation() {
   if (!state.showingLibrary && course()) {
     $('#course-nav').innerHTML =
       `<div class="workspace-identity"><span class="eyebrow">${esc(course().code || 'YOUR WORKSPACE')}</span><h2>${esc(courseDisplayName(course()))}</h2><small>${esc(course().term || 'Your own pace')}</small>${button('Course overview', 'materials', '', 'workspace-overview')}</div>`;
+    if (!doc() && !selectedAssignment(state))
+      $('.workspace-overview').setAttribute('aria-current', 'page');
   }
   $('#material-nav').innerHTML =
     !state.showingLibrary && course()
-      ? `<div class="section-label">${button(`${closedSections.has('materials') ? '›' : '⌄'} MATERIALS`, 'collapseMaterials', '', 'section-toggle')}${button('+', 'upload')}</div>${closedSections.has('materials') ? '' : `<input id="sidebar-material-search" class="sidebar-material-search" placeholder="Find a reading…" aria-label="Find a course material" value="${esc(materialQuery)}">${materialGroupsMarkup(state.materialGroups || [], { compact: true, savedLabel: hosted ? 'Saved to your account' : 'Saved offline', courseID: course().id, selectedID: doc()?.id, selectedAssignmentID: state.library.selectedAssignmentID, query: materialQuery, closed: closedSections, busy: state.busy })}`}`
+      ? `<div class="section-label">${button(`${closedSections.has('materials') ? '›' : '⌄'} MATERIALS`, 'collapseMaterials', '', 'section-toggle')}${button('+', 'upload', '', '', 'Add documents')}</div>${closedSections.has('materials') ? '' : `<input id="sidebar-material-search" class="sidebar-material-search" placeholder="Find a reading…" aria-label="Find a course material" value="${esc(materialQuery)}">${materialGroupsMarkup(state.materialGroups || [], { compact: true, savedLabel: hosted ? 'Saved to your account' : 'Saved offline', courseID: course().id, selectedID: doc()?.id, selectedAssignmentID: state.library.selectedAssignmentID, query: materialQuery, closed: closedSections, busy: state.busy })}`}`
       : '';
   $('#material-nav .section-toggle')?.setAttribute(
     'aria-expanded',
     !closedSections.has('materials')
   );
+  document.querySelectorAll('#material-nav .material-row.active > button').forEach((item) => {
+    item.setAttribute('aria-current', 'page');
+  });
   $('#thread-nav').innerHTML =
     !state.showingLibrary && course()?.threads.length
-      ? `<div class="section-label">CONVERSATIONS ${button('+', 'newThread')}</div>${[
+      ? `<div class="section-label">CONVERSATIONS ${button('+', 'newThread', '', '', 'New conversation')}</div>${[
           ...course().threads,
         ]
           .reverse()
@@ -510,7 +665,8 @@ function renderNavigation() {
     $('#sidebar-material-search').setSelectionRange(...caret);
   }
 }
-function renderLibrary() {
+function renderLibrary(panel) {
+  const previousAgendaView = $('.agenda-scroll')?.dataset.agendaView;
   const focused = [
     'course-search',
     'assignment-search',
@@ -526,15 +682,58 @@ function renderLibrary() {
     selector,
     $(selector)?.scrollTop || 0,
   ]);
-  $('#library').innerHTML = courseLibraryMarkup(state, courseQuery, {
+  const assignmentOptions = {
+    refreshError: state.library.canvasAssignmentsError,
     query: agendaQuery,
-    filter: agendaFilter,
-  });
+    filter: showingAssignments() ? assignmentsPageFilter : agendaFilter,
+    dedicated: showingAssignments(),
+  };
+  if (panel === 'workspaces' && $('.workspace-panel')) {
+    $('.workspace-panel').outerHTML = workspacePanelMarkup(state, courseQuery);
+  } else if (panel === 'assignments' && $('.assignment-agenda')) {
+    $('.assignment-agenda').outerHTML = assignmentAgendaMarkup(state.library.courses, {
+      ...assignmentOptions,
+      semesters: state.semesters,
+      busy: state.busy,
+    });
+  } else {
+    $('#library').innerHTML = courseLibraryMarkup(state, courseQuery, assignmentOptions);
+  }
+  if ($('.agenda-scroll')?.dataset.agendaView !== previousAgendaView) {
+    agendaNeedsTodayFocus = assignmentOptions.filter === 'due' && !agendaQuery.trim();
+    const savedAgendaScroll = scroll.find(([selector]) => selector === '.agenda-scroll');
+    if (savedAgendaScroll) savedAgendaScroll[1] = 0;
+  }
+  renderDashboardPanel();
   for (const [selector, top] of scroll) if ($(selector)) $(selector).scrollTop = top;
   if (focused && $(`#${focused.id}`)) {
     $(`#${focused.id}`).focus({ preventScroll: true });
     if (selection) $(`#${focused.id}`).setSelectionRange(...selection);
   }
+}
+function renderDashboardPanel() {
+  const dashboard = $('.study-dashboard');
+  if (!dashboard) return;
+  dashboard.dataset.panel = dashboardPanel;
+  dashboard.querySelectorAll('[data-action="dashboardPanel"]').forEach((control) => {
+    control.setAttribute('aria-pressed', String(control.dataset.id === dashboardPanel));
+  });
+  if (agendaNeedsTodayFocus) requestAnimationFrame(() => scrollAgendaToToday());
+}
+function scrollAgendaToToday(focus = false) {
+  const scroll = $('.agenda-scroll'),
+    today = $('#agenda-today');
+  if (!scroll?.clientHeight || !today) return;
+  if (getComputedStyle(scroll).overflowY === 'visible') {
+    today.scrollIntoView({ block: 'center' });
+  } else {
+    scroll.scrollTop +=
+      today.getBoundingClientRect().top -
+      scroll.getBoundingClientRect().top -
+      scroll.clientHeight * 0.18;
+  }
+  if (focus) today.focus({ preventScroll: true });
+  agendaNeedsTodayFocus = false;
 }
 
 async function renderReader() {
@@ -650,7 +849,7 @@ async function renderReader() {
   readerURLs = [];
   $('#reader-content').classList.remove('pdf-active', 'pdf-dark');
   $('#reader-toolbar').innerHTML = item
-    ? `<span class="eyebrow">${esc({ text: 'READING', image: 'IMAGE', code: 'SOURCE CODE', notebook: 'NOTEBOOK', office: 'OFFICE DOCUMENT', preview: 'ORIGINAL FILE' }[item.kind] || 'READING')}</span><div class="tools">${canEditDocument(item) ? button('Edit', 'editDocument') : ''}${button('Download', 'downloadOriginal')}${item.kind === 'office' || item.kind === 'preview' ? button('Original layout ↗', 'native') : ''}${button('Chat', 'toggleChat')}${button('Materials', 'materials')}</div>`
+    ? `<span class="eyebrow">${esc({ text: 'READING', image: 'IMAGE', code: 'SOURCE CODE', notebook: 'NOTEBOOK', office: 'OFFICE DOCUMENT', preview: 'ORIGINAL FILE' }[item.kind] || 'READING')}</span><div class="tools">${isHTMLDocument(item) ? button(readingViews.has(item.id) ? 'Original page' : 'Reading view', 'toggleOriginalPage') : ''}${safeDocumentURL(item.sourceURL) ? `<a href="${esc(safeDocumentURL(item.sourceURL))}" target="_blank" rel="noopener noreferrer">Open source ↗</a>` : ''}${canEditDocument(item) ? button('Edit', 'editDocument') : ''}${button('Download original', 'downloadOriginal')}${!hosted && (item.kind === 'office' || item.kind === 'preview') ? button('Original layout ↗', 'native') : ''}${button('Chat', 'toggleChat')}${button('Materials', 'materials')}</div>`
     : `<span class="eyebrow">COURSE MATERIALS</span><div class="tools">${button('＋ Add', 'upload')}</div>`;
   if (!item) {
     renderMaterials();
@@ -659,6 +858,20 @@ async function renderReader() {
   const notice = item.contentNotice
     ? `<p class="document-notice">${esc(item.contentNotice.replace('Use Original layout', 'Open Original layout in the Mac app'))}</p>`
     : '';
+  if (isHTMLDocument(item) && !readingViews.has(item.id)) {
+    const response = await fetch(`/api/document/${item.id}`, { headers: { 'X-Scholia-Token': token } });
+    if (!response.ok) throw new Error('The original page is unavailable.');
+    const html = await response.text();
+    if (generation !== readerGeneration) return;
+    const frame = document.createElement('iframe');
+    frame.className = 'original-document-frame';
+    frame.title = `Original page · ${item.title}`;
+    frame.setAttribute('sandbox', 'allow-same-origin allow-popups allow-popups-to-escape-sandbox');
+    frame.srcdoc = originalDocumentHTML(new DOMParser().parseFromString(html, 'text/html'), item.sourceURL);
+    frame.addEventListener('load', () => frame.contentDocument?.addEventListener('click', followCourseLink));
+    $('#reader-content').replaceChildren(frame);
+    return;
+  }
   if (item.kind === 'notebook') {
     notebookReader = new StudyNotebookReader({
       host: $('#reader-content'),
@@ -685,7 +898,7 @@ async function renderReader() {
       return;
     }
     $('#reader-content').innerHTML =
-      `${notice}<article class="paper ${item.kind === 'code' ? 'source-code' : ''}">${renderMarkdown(state.pageText || '*This section has no saved text.*')}<div class="embedded-images"></div></article>`;
+      `${notice}<article class="paper ${item.kind === 'code' ? 'source-code' : ''}">${renderMarkdown(restoreCourseLinks(state.pageText || '*This section has no saved text.*', c, item))}<div class="embedded-images"></div></article>`;
     if (item.kind === 'office') {
       const index = await request(`/api/index/${item.id}`);
       if (generation !== readerGeneration) return;
@@ -722,7 +935,7 @@ async function renderReader() {
   }
 }
 async function explainSelection(text, page, explain, question = '', documentID = doc()?.id) {
-  if (explain && selectedAssignment(state) && state.busy) {
+  if (explain && (state.assignmentPreparing ?? (selectedAssignment(state) && state.busy))) {
     notify('Preparing the assignment files. Try explaining this passage once they are ready.');
     return false;
   }
@@ -740,9 +953,7 @@ async function explainSelection(text, page, explain, question = '', documentID =
   $('.workspace').classList.remove('chat-hidden');
   if (explain) {
     await action('send', {
-      text:
-        question.trim() ||
-        'Explain the selected passage clearly, using its context in the document.',
+      text: question.trim(),
       selection: text,
       mode: 'Explain',
       clearImage: true,
@@ -753,13 +964,14 @@ async function explainSelection(text, page, explain, question = '', documentID =
     draftDirty = !!saved || !!savedImage;
     if (draftDirty) await saveDraft();
   }
-  if (!explain && question.trim()) {
-    $('#question').value = [$('#question').value, question.trim()].filter(Boolean).join('\n\n');
+  if (!explain) {
+    if (question.trim()) $('#question').value = [$('#question').value, question.trim()].filter(Boolean).join('\n\n');
     draftDirty = true;
+    await saveDraft();
   }
   renderComposer();
-  if (!explain) $('#question').focus();
-  return explain;
+  if (!explain) focusTutor();
+  return true;
 }
 async function beginDocumentEdit() {
   const item = doc();
@@ -796,20 +1008,27 @@ async function downloadOriginal() {
   const url = URL.createObjectURL(await response.blob());
   const link = document.createElement('a');
   link.href = url;
-  link.download = item.fileName || item.title;
+  link.download = item.originalFileName || item.fileName || item.title;
   link.click();
   setTimeout(() => URL.revokeObjectURL(url), 60000);
 }
 function renderMaterials() {
   const c = course();
   if (!c) return;
+  const search = document.activeElement?.id === 'material-search' ? document.activeElement : null;
+  const caret = search ? [search.selectionStart, search.selectionEnd] : null;
+  const hasAssignments = c.canvasMaterials?.some((material) => material.kind === 'assignments');
   $('#reader-content').innerHTML =
-    `<div class="course-materials"><span class="eyebrow">${esc(c.code || 'YOUR WORKSPACE')}</span><h2>${esc(courseDisplayName(c))}</h2><p>${c.canvasID ? (hosted ? 'Open a reading to save it to your private account and include it in your tutor’s course context.' : 'Open a reading to download it. Once saved, it’s available offline and included in your tutor’s course context.') : 'A home for your readings and the questions they spark. Add documents, notebooks, or code to get started.'}</p>
-    <div class="course-tools">${c.canvasID ? `${button(c.catalogUpdatedAt ? 'Check for changes' : 'Index materials', 'index', c.id)}${button('Download all', 'downloadAll', c.id)}<a href="${courseURL(c)}" target="_blank" rel="noreferrer">Open Canvas ↗</a>` : button('＋ Add documents', 'upload', '', 'primary')}</div>
+    `<div class="course-materials"><span class="eyebrow">${esc(c.code || 'YOUR WORKSPACE')}</span><h2>${esc(courseDisplayName(c))}</h2><p>${c.canvasID ? (hosted ? 'Open a reading to save it to your account and discuss it with your tutor.' : 'Open a reading to save it offline and discuss it with your tutor.') : 'Add readings, notebooks, or code, then explore them with your tutor.'}</p>
+    <div class="course-tools">${button('Ask about this course', 'askCourse', '', 'primary')}${button('Practice course', 'practiceCourse', c.id)}${c.canvasID ? `${button(c.catalogUpdatedAt ? 'Check for changes' : 'Index materials', 'index', c.id)}${button('Download all', 'downloadAll', c.id)}<a href="${courseURL(c)}" target="_blank" rel="noreferrer">Open Canvas ↗</a>` : button('＋ Add documents', 'upload', '', 'primary')}</div>
     ${catalogChangeSummary(c.catalogChanges) ? `<p class="material-changes">Latest check: ${esc(catalogChangeSummary(c.catalogChanges))}</p>` : ''}
-    ${materialViewPicker(materialViews[c.id])}
-    ${c.canvasID && materialViews[c.id] !== 'files' ? assignmentsMarkup([c], { query: materialQuery, includeCompleted: includeCompletedAssignments, showCourse: false, busy: state.busy }) : ''}
-    ${!materialQuery && materialViews[c.id] !== 'files' ? continueReadingMarkup(recentReadings([c], 1)) : ''}<input class="material-search" id="material-search" placeholder="Search materials…" aria-label="Search materials" value="${esc(materialQuery)}">${materialsViewMarkup(state.materialGroups || [], state.materialFiles || [], { savedLabel: hosted ? 'Saved to your account' : 'Saved offline', view: materialViews[c.id], picker: false, courseID: c.id, query: materialQuery, closed: closedSections, busy: state.busy })}</div>`;
+    <div class="materials-toolbar"><input class="material-search" id="material-search" placeholder="Search materials…" aria-label="Search materials" value="${esc(materialQuery)}">${materialViewPicker(materialViews[c.id])}</div>
+    ${c.canvasID && hasAssignments && materialViews[c.id] !== 'files' ? assignmentsMarkup([c], { query: materialQuery, includeCompleted: includeCompletedAssignments, showCourse: false, busy: state.busy }) : ''}
+    ${!materialQuery && materialViews[c.id] !== 'files' ? continueReadingMarkup(recentReadings([c], 1)) : ''}${materialsViewMarkup(state.materialGroups || [], state.materialFiles || [], { savedLabel: hosted ? 'Saved to your account' : 'Saved offline', view: materialViews[c.id], picker: false, courseID: c.id, query: materialQuery, closed: closedSections, busy: state.busy })}</div>`;
+  if (search) {
+    $('#material-search').focus({ preventScroll: true });
+    $('#material-search').setSelectionRange(...caret);
+  }
 }
 function renderMessages() {
   conversation.render(state);
@@ -836,9 +1055,9 @@ function renderComposer() {
     sendPending ||
     (!state.streaming &&
       (state.loadingDocument ||
-        (selectedAssignment(state) && state.busy) ||
+        (state.assignmentPreparing ?? (selectedAssignment(state) && state.busy)) ||
         !course() ||
-        (!$('#question').value.trim() && !imageData)));
+        (!$('#question').value.trim() && !imageData && !selectedText.trim())));
   $('#question-image').hidden = !imageData;
   $('#question-image').innerHTML = imageData
     ? `<img alt="Attached question image" src="data:image/jpeg;base64,${imageData}"><span>Image attached</span>${button('×', 'removeImage')}`
@@ -853,12 +1072,15 @@ function renderComposer() {
 }
 async function prepareStudyPrompt(mode) {
   if (!course() || sendPending || state.streaming) return;
-  if (mode === 'Practice' && !hosted) {
+  if (mode === 'Practice') {
     await saveDraft('Practice');
     await practice.open('setup');
     return;
   }
-  $('#question').value = appendStudyPrompt($('#question').value, studyPrompt(mode, doc()));
+  $('#question').value = appendStudyPrompt(
+    $('#question').value,
+    studyPrompt(mode, conversationScope(state) === 'course' ? null : doc())
+  );
   draftDirty = true;
   $('.workspace').classList.remove('chat-hidden');
   $('#question').focus();
@@ -890,6 +1112,7 @@ async function saveDraft(mode = state?.mode) {
   renderComposer();
 }
 async function navigate(name, values = {}) {
+  examPlanner.close();
   if (draftDirty) {
     if (studyRenderKey(draftOwner) === studyRenderKey(state.draftOwner)) await saveDraft();
     else persistBrowserDraft();
@@ -897,11 +1120,29 @@ async function navigate(name, values = {}) {
   if (!draftDirty) selectedText = '';
   materialQuery = '';
   await action(name, values);
-  $('.app').classList.remove('sidebar-open');
+  setSidebarOpen(false);
+}
+function focusTutor() {
+  $('.workspace').classList.remove('chat-hidden');
+  $('#question').focus({ preventScroll: true });
+  if (window.matchMedia('(max-width: 640px)').matches)
+    $('.tutor').scrollIntoView({ block: 'start', behavior: 'smooth' });
+}
+async function askCourse(promptID) {
+  if (!course() || sendPending) return;
+  if (conversationScope(state) !== 'course') await navigate('askCourse');
+  const prompt = coursePrompts.find((prompt) => prompt.id === promptID);
+  if (prompt && !state.streaming) {
+    $('#question').value = appendStudyPrompt($('#question').value, prompt.question);
+    draftDirty = true;
+    await saveDraft();
+  }
+  focusTutor();
+  renderComposer();
 }
 async function send() {
   if (sendPending) return;
-  if (!state.streaming && selectedAssignment(state) && state.busy) {
+  if (!state.streaming && (state.assignmentPreparing ?? (selectedAssignment(state) && state.busy))) {
     notify('Preparing the assignment files. Your question is kept here.');
     return;
   }
@@ -910,7 +1151,7 @@ async function send() {
     notify('Your reading is opening. Your question is saved here.');
     return;
   }
-  if (!$('#question').value.trim() && !imageData) return;
+  if (!$('#question').value.trim() && !imageData && !selectedText.trim()) return;
   clearTimeout(draftTimer);
   const values = draftValues();
   const sentImage = imageData,
@@ -981,11 +1222,15 @@ async function importFiles(files) {
 
 document.addEventListener('click', async (event) => {
   const target = event.target.closest(
-    '[data-action],[data-study-prompt],[data-mode],[data-source]'
+    '[data-action],[data-study-prompt],[data-course-prompt],[data-mode],[data-source]'
   );
   if (!target) return;
   event.preventDefault();
   try {
+    if (target.dataset.coursePrompt) {
+      await askCourse(target.dataset.coursePrompt);
+      return;
+    }
     if (target.dataset.studyPrompt) {
       await prepareStudyPrompt(target.dataset.studyPrompt);
       return;
@@ -1006,15 +1251,46 @@ document.addEventListener('click', async (event) => {
     const name = target.dataset.action,
       id = target.dataset.id;
     if (
-      ['library', 'course', 'document', 'thread', 'materials', 'newThread', 'resume'].includes(name)
+      $('#course-navigation').contains(target) &&
+      !['collapseWorkspaces', 'collapseMaterials'].includes(name)
+    )
+      setSidebarOpen(false);
+    if (
+      ['library', 'assignments', 'course', 'document', 'thread', 'materials', 'newThread', 'resume'].includes(name)
     ) {
       await navigate(name, { id });
       return;
     }
     switch (name) {
+      case 'askCourse':
+        await askCourse();
+        break;
+      case 'askReading':
+        if (doc()) await navigate('document', { id: doc().id });
+        focusTutor();
+        break;
+      case 'dashboardPanel':
+        dashboardPanel = id === 'assignments' ? 'assignments' : 'workspaces';
+        renderDashboardPanel();
+        break;
+      case 'agendaToday':
+        scrollAgendaToToday(true);
+        break;
+      case 'exams':
+        examPlanner.open();
+        setSidebarOpen(false);
+        break;
+      case 'search':
+        workspaceSearch.open();
+        break;
       case 'practiceThis':
         await saveDraft();
         await practice.open('setup');
+        break;
+      case 'practiceCourse':
+        if (id && id !== course()?.id) await navigate('course', { id });
+        await saveDraft();
+        await practice.open('course');
         break;
       case 'reviewDue':
         await practice.open('review');
@@ -1053,20 +1329,23 @@ document.addEventListener('click', async (event) => {
         $('#canvas-dialog').showModal();
         break;
       case 'sidebar':
-        $('.app').classList.toggle('sidebar-open');
+        setSidebarOpen(!$('.app').classList.contains('sidebar-open'));
+        break;
+      case 'closeSidebar':
+        setSidebarOpen(false);
         break;
       case 'all':
       case 'favorites':
       case 'semesters':
-      case 'assignments':
         await action('libraryView', { id: name });
         break;
       case 'materialView':
         selectMaterialView(id);
         break;
       case 'agendaHandedIn':
-        agendaFilter = 'handedIn';
-        renderLibrary();
+        if (showingAssignments()) assignmentsPageFilter = 'handedIn';
+        else agendaFilter = 'handedIn';
+        renderLibrary('assignments');
         break;
       case 'assignmentFilter':
         includeCompletedAssignments = id === 'all';
@@ -1143,6 +1422,11 @@ document.addEventListener('click', async (event) => {
         });
         $('#canvas-token').value = '';
         break;
+      case 'signIn':
+        $('#canvas-dialog [data-action=signIn]').disabled = true;
+        $('#canvas-connection-status').textContent = 'Checking saved connection…';
+        await action('signIn', { origin: $('#canvas-origin').value });
+        break;
       case 'previous':
         if (pdfReader) pdfReader.navigate(-1);
         else await action('page', { page: state.page - 1 });
@@ -1159,6 +1443,11 @@ document.addEventListener('click', async (event) => {
         break;
       case 'downloadOriginal':
         await downloadOriginal();
+        break;
+      case 'toggleOriginalPage':
+        if (readingViews.has(doc().id)) readingViews.delete(doc().id);
+        else readingViews.add(doc().id);
+        await renderReader();
         break;
       case 'editDocument':
         await beginDocumentEdit();
@@ -1229,6 +1518,19 @@ $('#model-picker').addEventListener('change', (event) => {
 $('#include-course').addEventListener('change', (event) =>
   action('context', { enabled: event.target.checked }).catch(() => {})
 );
+$('#reasoning-picker').addEventListener('change', async (event) => {
+  try {
+    await action('reasoning', {
+      text: event.target.value,
+      id: state.modelID,
+      providerID: state.providerID,
+    });
+  } catch (error) {
+    lastReasoning = '';
+    update(state);
+    notify(error.message);
+  }
+});
 $('#document-upload').addEventListener('change', (event) => {
   importFiles([...event.target.files]).catch((e) => notify(e.message));
   event.target.value = '';
@@ -1237,6 +1539,18 @@ $('#image-upload').addEventListener('change', (event) => {
   attach(event.target.files[0]).catch((e) => notify(e.message));
   event.target.value = '';
 });
+function followCourseLink(event) {
+  const anchor = event.target.closest?.('a[href]');
+  if (!anchor || event.button || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
+  const target = courseLinkTarget(anchor.href, course());
+  if (!target) return;
+  event.preventDefault();
+  event.stopPropagation();
+  const name = target.id.startsWith('assignments:') ? 'assignment' : target.document ? 'document' : 'material';
+  navigate(name, { id: name === 'document' ? target.document.id : target.id, courseID: course().id })
+    .catch((error) => notify(error.message));
+}
+$('#reader-content').addEventListener('click', followCourseLink);
 $('#reader-content').addEventListener('dragover', (event) => event.preventDefault());
 $('#reader-content').addEventListener('drop', (event) => {
   event.preventDefault();
@@ -1252,12 +1566,12 @@ $('#reader-content').addEventListener('mouseup', () => {
 document.addEventListener('input', (event) => {
   if (event.target.id === 'assignment-search') {
     agendaQuery = event.target.value;
-    renderLibrary();
+    renderLibrary('assignments');
   }
   if (event.target.id === 'course-search') {
     const position = event.target.selectionStart;
     courseQuery = event.target.value;
-    renderLibrary();
+    renderLibrary('workspaces');
     $('#course-search').focus();
     $('#course-search').setSelectionRange(position, position);
   }
@@ -1275,8 +1589,9 @@ document.addEventListener('change', (event) => {
   if (event.target.id === 'workspace-filter')
     action('libraryView', { id: event.target.value }).catch(() => {});
   if (event.target.id === 'agenda-filter') {
-    agendaFilter = event.target.value;
-    renderLibrary();
+    if (showingAssignments()) assignmentsPageFilter = event.target.value;
+    else agendaFilter = event.target.value;
+    renderLibrary('assignments');
   }
   if (event.target.id === 'semester-picker')
     action('semester', { id: event.target.value }).catch(() => {});
@@ -1290,7 +1605,12 @@ document.addEventListener(
   'toggle',
   (event) => {
     const key = event.target.dataset?.collapseKey;
-    if (!key || !event.target.isConnected || materialQuery) return;
+    if (
+      !key ||
+      !event.target.isConnected ||
+      (materialQuery && event.target.classList.contains('material-group'))
+    )
+      return;
     if (event.target.open) {
       closedSections.delete(key);
       closedSections.add(`open:${key}`);
@@ -1306,9 +1626,17 @@ document.addEventListener('visibilitychange', () => {
   if (!document.hidden) poll();
 });
 window.addEventListener('beforeunload', (event) => {
-  if (draftDirty || [...editDocuments.values()].some((edit) => edit.dirty || edit.busy)) {
+  if (
+    draftDirty ||
+    examPlanner.dirty() ||
+    [...editDocuments.values()].some((edit) => edit.dirty || edit.busy)
+  ) {
     event.preventDefault();
     event.returnValue = '';
   }
 });
 await poll();
+if (location.hash === '#exams') examPlanner.open();
+window.addEventListener('hashchange', () => {
+  if (location.hash === '#exams') examPlanner.open();
+});

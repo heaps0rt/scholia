@@ -1,5 +1,5 @@
 import { MAX_FILE_TEXT } from '../../../packages/core/src/file-attachments.js';
-import { extractPdfContext } from './pdf-context.js';
+import { extractPdfContext } from './pdf/pdf-context.js';
 import { normalizeImageFile } from './image-input.js';
 import { extractOfficeText } from './office-text.js';
 
@@ -15,7 +15,7 @@ export async function readChatFile(file, { signal } = {}) {
   }
   if (file.type === 'application/pdf' || /\.pdf$/i.test(file.name)) {
     const pdf = await extractPdfContext(file, { signal, maxCharacters: MAX_FILE_TEXT });
-    if (!pdf.extractedCharacters) throw new Error(`“${file.name}” has no readable text. Attach images of scanned pages instead.`);
+    if (!pdf.extractedCharacters) throw new Error(`“${file.name}” has no readable text after local OCR. Try a clearer scan or attach page images.`);
     return { ...base, mimeType: 'application/pdf', text: pdf.context.slice(0, MAX_FILE_TEXT), truncated: pdf.truncated || pdf.context.length > MAX_FILE_TEXT };
   }
   const bytes = new Uint8Array(await file.slice(0, MAX_FILE_TEXT * 4 + 4).arrayBuffer());

@@ -4,7 +4,7 @@ Scholia has a native Mac app, a Chrome extension, and a hosted web service.
 `apps/web` is the browser workspace used by both the hosted service and the Mac
 app's optional local server. The three libraries do not synchronize.
 
-For the directory map and development commands, see [Contributing](../CONTRIBUTING.md).
+For the directory map and development commands, see [Contributing](CONTRIBUTING.md).
 For user-facing behavior, see the [workspace guide](STUDY_WORKSPACE.md).
 
 ## Shared contracts
@@ -12,7 +12,8 @@ For user-facing behavior, see the [workspace guide](STUDY_WORKSPACE.md).
 `packages/core` contains JavaScript provider definitions, prompts, attachment
 limits, and context ranking. The normalized explanation request is described by
 [`explain-request.schema.json`](../packages/core/schemas/explain-request.schema.json).
-Swift has native types for the same concepts.
+Swift has native types for the same concepts. Shared modules also cover course
+links, exam schedules, tutoring rules, and content-polling policies.
 
 Source material is labelled and delimited separately from user instructions.
 Provider calls include a limited source snapshot, not the entire library.
@@ -30,7 +31,8 @@ Opening the native workspace does not start a web server.
 `StudyWorkspaceModel` owns navigation, courses, documents, threads, and drafts.
 `StudyDocumentImporter` copies originals into the library and builds text
 indexes. Native semantic search runs the bundled JavaScript ranker through
-JavaScriptCore. Notebook cells, macros, and formulas are never executed.
+JavaScriptCore for document relevance. Workspace file search uses a separate
+SQLite trigram index with a C verifier; see [Search](SEARCH.md). Notebook cells, macros, and formulas are never executed.
 
 Library snapshots use a serial queue that combines pending saves and flushes
 at lifecycle boundaries. Back/Forward saves drafts before changing readings.
@@ -77,13 +79,14 @@ for recovery after a conflict.
 with capability flags for hosted features. It needs no Mac process or loopback
 bridge.
 
-| Module                                | Responsibility                                                                    |
-| ------------------------------------- | --------------------------------------------------------------------------------- |
-| `store.js`                            | SQLite accounts, password hashes, sessions, and credential encryption             |
-| `workspaces.js`                       | Account-scoped state, serialized mutations, and document revisions                |
-| `documents.js` / `document-worker.js` | Originals, text indexes, and extraction in worker threads                         |
-| `canvas.js`                           | Account-specific Canvas access and the configured host allowlist                  |
-| `network.js`                          | DNS validation, private-address rejection, download limits, and redirect handling |
+| Module          | Responsibility                                                                    |
+| --------------- | --------------------------------------------------------------------------------- |
+| `store.js`      | SQLite accounts, password hashes, sessions, and credential encryption             |
+| `workspaces.js` | Account-scoped state, serialized mutations, and document revisions                |
+| `documents/`    | Originals, text indexes, OCR, and extraction in worker threads                    |
+| `courses/`      | Canvas access, public course sources, and update scheduling                       |
+| `search/`       | Account search indexes and worker threads                                         |
+| `network.js`    | DNS validation, private-address rejection, download limits, and redirect handling |
 
 Passwords use salted scrypt. Sessions store hashed tokens and expire after seven
 days. Provider and Canvas credentials use AES-256-GCM with a server-held key.
@@ -95,8 +98,9 @@ upload/worker limits add protection. Public origins require HTTPS.
 
 The deployment model is one process with persistent local SQLite and file
 storage. Each session has independent reading navigation. Hosted PDF extraction
-uses PDF.js text extraction; native Vision OCR and the native practice store are
-not available. See [Hosting](HOSTING.md) for configuration and backups.
+uses PDF.js text extraction; local Tesseract adds OCR when installed. Hosted practice uses account-owned
+SQLite records, separate from the native learning store. Search runs in worker
+threads against separate account indexes. See [Hosting](HOSTING.md) for configuration and backups.
 
 ## Chrome extension
 
@@ -119,10 +123,22 @@ PDF.js, decoders, workers, and fonts are bundled. Visible pages render before
 background indexing. Indexes are cached by PDF fingerprint; local file handles
 remain revocable. Canvas caches are scoped by host, account, and course.
 
+## Course updates and planning
+
+Canvas catalogs include linked documents, feedback, public teaching websites,
+and semester-specific math wiki pages. Saved versions and download checkpoints
+keep interrupted transfers recoverable. Assignment status, Canvas content, and
+public websites have separate update schedules and controls.
+
+Exam plans store reviewed dates and component selections. Imports are parsed
+locally; optional recommendations send the reviewed schedule and the user's
+request to the selected provider. The app checks suggested selections against
+known exam IDs and timing constraints before applying them.
+
 ## Verification
 
 Unit and service tests cover contracts, account separation, CSRF, credentials,
 revision conflicts, and context handling. Native smoke runners link application
 code against temporary libraries and deterministic fixtures. Browser smoke
-checks run in Chromium. [Contributing](../CONTRIBUTING.md) lists the commands and
+checks run in Chromium. [Contributing](CONTRIBUTING.md) lists the commands and
 explains which checks run in CI.

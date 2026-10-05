@@ -1,4 +1,4 @@
-import { ownChatHistoryMutations, mutateChatHistory } from './chat-history.js';
+import { ownChatHistoryMutations, mutateChatHistory } from './chat/chat-history.js';
 ownChatHistoryMutations();
 
 import { panelSourceTab } from './panel-source.js';
@@ -12,21 +12,23 @@ import {
   resolveModelId,
   siteIsEnabled
 } from '../../../packages/core/src/providers.js';
-import { checkBridgeStatus, discoverOpencodeModels, runCompletion } from './provider-runtime.js';
-import { openExplanationChat } from './explanation-chat.js';
-import { pdfWrapperDownloadUrl } from './pdf-context.js';
-import { pdfMimeHandlerEnabled, pdfMimeHandlerFrameId } from './pdf-mime-handler.js';
+import { checkBridgeStatus, discoverCodexModels, discoverOpencodeModels, runCompletion } from './provider-runtime.js';
+import { RECENT_MODELS_KEY, recordRecentModel } from '../../../packages/core/src/recent-models.js';
+import { openExplanationChat } from './chat/explanation-chat.js';
+import { pdfWrapperDownloadUrl } from './pdf/pdf-context.js';
+import { forwardOcrRequest } from './pdf/ocr-broker.js';
+import { pdfMimeHandlerEnabled, pdfMimeHandlerFrameId } from './pdf/pdf-mime-handler.js';
 import {
   loadPdfSourceRecord,
   prunePdfSourceRecords,
   storePdfSourceRecord
-} from './pdf-source-store.js';
+} from './pdf/pdf-source-store.js';
 import {
   loadLocalPdfFileRecord,
   localPdfFileSource,
   pruneLocalPdfFileHandles
-} from './pdf-local-file-store.js';
-import { restoredPdfTabTarget } from './pdf-tab-restore.js';
+} from './pdf/pdf-local-file-store.js';
+import { restoredPdfTabTarget } from './pdf/pdf-tab-restore.js';
 import {
   chatGptMemoryLooksLikePersonalizationPage,
   isChatGptWebUrl
@@ -74,7 +76,7 @@ import {
 import { embeddedFrameContext, MAX_DEEP_PAGE_TILES } from './deep-page.js';
 import { MAX_MAIL_THREAD_CONTEXT_CHARACTERS } from './mail-context.js';
 import { configurePdfMimeHandling } from './browser-compat.js';
-import { nativePdfProgressFromScriptResults } from './pdf-progress.js';
+import { nativePdfProgressFromScriptResults } from './pdf/pdf-progress.js';
 import {
   closeQuickChatFromSignal,
   toggleQuickChatFromCommandTab
@@ -92,16 +94,17 @@ const stagedPdfSources = new Map();
 const newlyCreatedTabs = new Set();
 const mimePdfTabs = new Map();
 let automaticChatGptRefreshTask = null;
-let opencodeModelDiscoveryTask = null;
-const OPENCODE_MODEL_CATALOG_TTL = 10 * 60_000;
+const modelDiscoveryTasks = new Map();
+let modelCatalogWrite = Promise.resolve();
+const MODEL_CATALOG_TTL = 2 * 60_000;
 const DEEP_PAGE_CAPTURE_INTERVAL_MS = 540;
 
 configurePdfMimeHandling().catch(() => {});
 
 async function loadSettings() {
-  const stored = await chrome.storage.local.get(SETTINGS_KEY);
+  const stored = await chrome.storage.local.get([SETTINGS_KEY, RECENT_MODELS_KEY]);
   const source = stored[SETTINGS_KEY] || DEFAULT_SETTINGS;
-  const merged = mergeSettings(source);
+  const merged = mergeSettings({ ...source, recentModels: stored[RECENT_MODELS_KEY] || source.recentModels });
   // Prompt-time normalization already fails closed. Persist this migration as
   // well so an old Personalization-page scrape cannot reappear after another
   // extension surface edits otherwise unrelated settings.
@@ -109,6 +112,17 @@ async function loadSettings() {
     await chrome.storage.local.set({ [SETTINGS_KEY]: merged }).catch(() => {});
   }
   return merged;
+}
+
+// A separate key and queue keep concurrent chat completions from losing history
+// or overwriting credentials/settings saved while a response was in flight.
+let recentModelWrite = Promise.resolve();
+function rememberModelUse(provider, model) {
+  recentModelWrite = recentModelWrite.catch(() => {}).then(async () => {
+    const stored = await chrome.storage.local.get(RECENT_MODELS_KEY);
+    await chrome.storage.local.set({ [RECENT_MODELS_KEY]: recordRecentModel(stored[RECENT_MODELS_KEY], provider, model) });
+  });
+  return recentModelWrite;
 }
 
 async function saveSettings(settings) {
@@ -128,47 +142,44 @@ async function syncChatGptContextRefreshAlarm(settings = null) {
   if (schedule) chrome.alarms.create(CHATGPT_CONTEXT_REFRESH_ALARM, schedule);
 }
 
-async function refreshOpencodeModelCatalog(settings, { force = false, timeoutMs = 1_400 } = {}) {
-  const checkedAt = Number(settings.modelCatalogCheckedAt?.opencode || 0);
-  const cachedModels = settings.discoveredModels?.opencode || [];
-  const hasLegacyTruncatedCatalog = cachedModels.length >= 2_000;
-  if (!force && !hasLegacyTruncatedCatalog && Date.now() - checkedAt < OPENCODE_MODEL_CATALOG_TTL) {
-    return settings;
-  }
-  if (opencodeModelDiscoveryTask) return opencodeModelDiscoveryTask;
-
+async function refreshModelCatalog(providerId, settings, { force = false, timeoutMs } = {}) {
+  const checkedAt = Number(settings.modelCatalogCheckedAt?.[providerId] || 0);
+  const cachedModels = settings.discoveredModels?.[providerId] || [];
+  const hasLegacyTruncatedCatalog = providerId === 'opencode' && cachedModels.length >= 2_000;
+  if (!force && !hasLegacyTruncatedCatalog && Date.now() - checkedAt < MODEL_CATALOG_TTL) return settings;
+  if (modelDiscoveryTasks.has(providerId)) return modelDiscoveryTasks.get(providerId);
   const task = (async () => {
     const attemptedAt = Date.now();
     let discovered = null;
     try {
-      discovered = await discoverOpencodeModels(settings, { timeoutMs });
+      discovered = providerId === 'codex'
+        ? await discoverCodexModels(settings, { timeoutMs: 15_000 })
+        : await discoverOpencodeModels(settings, { timeoutMs: timeoutMs || 1_800 });
     } catch {}
-    const current = await loadSettings();
-    current.modelCatalogCheckedAt.opencode = attemptedAt;
-    if (discovered?.models?.length) current.discoveredModels.opencode = discovered.models;
-    else if (hasLegacyTruncatedCatalog) delete current.discoveredModels.opencode;
-    return saveSettings(current);
+    modelCatalogWrite = modelCatalogWrite.catch(() => {}).then(async () => {
+      const current = await loadSettings();
+      if (current.endpoints[providerId] !== settings.endpoints[providerId]) return current;
+      current.modelCatalogCheckedAt[providerId] = attemptedAt;
+      if (discovered?.models?.length) current.discoveredModels[providerId] = discovered.models;
+      else if (hasLegacyTruncatedCatalog) delete current.discoveredModels[providerId];
+      return saveSettings(current);
+    });
+    return modelCatalogWrite;
   })();
-  opencodeModelDiscoveryTask = task;
-  try {
-    return await task;
-  } finally {
-    if (opencodeModelDiscoveryTask === task) opencodeModelDiscoveryTask = null;
-  }
+  modelDiscoveryTasks.set(providerId, task);
+  try { return await task; }
+  finally { if (modelDiscoveryTasks.get(providerId) === task) modelDiscoveryTasks.delete(providerId); }
 }
 
 async function bridgeStatusWithModelCatalog(providerId, settings, options) {
-  if (providerId !== 'opencode') return checkBridgeStatus(providerId, settings, options);
-  const timeoutMs = Number(options?.timeoutMs) || 1_800;
-  const [status, refreshed] = await Promise.all([
-    checkBridgeStatus(providerId, settings, options),
-    refreshOpencodeModelCatalog(settings, {
-      force: options?.refreshModels === true,
-      timeoutMs
-    }).catch(() => settings)
-  ]);
-  if (!status.up) return status;
-  return { ...status, models: refreshed.discoveredModels.opencode || [] };
+  const status = await checkBridgeStatus(providerId, settings, options);
+  if (!status.up || !['codex', 'opencode'].includes(providerId)) return status;
+  // Discovery is independent of the fast health check. Storage events update
+  // an open picker when a new catalog arrives, without delaying chat startup.
+  void refreshModelCatalog(providerId, settings, {
+    force: options?.refreshModels === true, timeoutMs: options?.timeoutMs
+  }).catch(() => {});
+  return { ...status, models: settings.discoveredModels[providerId] || [] };
 }
 
 async function installMenus() {
@@ -1374,6 +1385,11 @@ async function sourceTabForPanel(sender, message) {
 
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (!message || typeof message.type !== 'string') return undefined;
+  if (message.target === 'scholia-ocr') return undefined;
+  if (message.type === 'SCHOLIA_OCR_RECOGNIZE' || message.type === 'SCHOLIA_OCR_CANCEL') {
+    respondAsync(sendResponse, forwardOcrRequest(message, sender));
+    return true;
+  }
 
   if (message.type === 'SCHOLIA_MUTATE_CHAT_HISTORY') {
     if (!isExtensionPage(sender)) { sendResponse({ ok: false, error: 'History can be changed only from an extension page.' }); return false; }
@@ -1782,8 +1798,14 @@ chrome.runtime.onConnect.addListener((port) => {
       }, request.controller.signal, (token) => {
         if (active !== request) return;
         try { port.postMessage({ type: 'reasoning', requestId: request.id, token }); } catch {}
+      }, (activity) => {
+        if (active !== request) return;
+        try { port.postMessage({ type: 'activity', requestId: request.id, activity }); } catch {}
       });
-      if (active === request) port.postMessage({ type: 'done', requestId: request.id, ...result });
+      if (active === request && !request.controller.signal.aborted) {
+        await rememberModelUse(result.provider, result.model).catch(() => {});
+        port.postMessage({ type: 'done', requestId: request.id, ...result });
+      }
     } catch (error) {
       if (active !== request) return;
       if (error?.name === 'AbortError') {

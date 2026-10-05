@@ -3,8 +3,8 @@ import { copyCodeBlock } from './clipboard.js';
 import { getCanvasCourseContext } from './canvas-index.js';
 import { providerById, providerSupportsFastMode } from '../../../packages/core/src/providers.js';
 import { packPageContext } from '../../../packages/core/src/context.js';
-import { CHAT_HISTORY_KEY, clearChats, deleteChat, listChats } from './chat-history.js';
-import { createUserTurn, requestConversation } from './chat-turn.js';
+import { CHAT_HISTORY_KEY, clearChats, deleteChat, listChats } from './chat/chat-history.js';
+import { createUserTurn, requestConversation } from './chat/chat-turn.js';
 import {
   CONTEXT_MODE_COMPACT,
   CONTEXT_MODE_FULL,
@@ -13,17 +13,18 @@ import {
   defaultContextMode
 } from './context-mode.js';
 import { parseModelChoice, populateModelSelect } from './model-select.js';
-import { extractPdfContext, fetchPdfBlob } from './pdf-context.js';
-import { renderMarkdown, renderReasoning } from './render.js';
+import { extractPdfContext, fetchPdfBlob } from './pdf/pdf-context.js';
+import { renderMarkdown, renderReasoning, renderActivity, addActivity, bindActivityDisclosure } from './render.js';
 import { sendRuntimeMessage as sendPopupMessage } from './runtime-message.js';
 import { PANEL_NAVIGATION_KEY } from './tab-context.js';
+import { openExamPlanner } from './exam-planner-launch.js';
 
 const popupWindow = chrome.windows?.getCurrent ? chrome.windows.getCurrent().then((value) => value.id).catch(() => null) : Promise.resolve(null);
 const message = async (payload) => sendPopupMessage({ ...payload, windowId: await popupWindow });
 
 const elements = Object.fromEntries([
   'settings', 'site-dot', 'site-state', 'site', 'site-toggle', 'open-sidebar', 'new-chat',
-  'explain', 'capture', 'open-pdf', 'open-pdf-viewer', 'model-settings', 'model-select', 'fast-mode', 'fast-mode-state', 'model-hint', 'chat-count',
+  'explain', 'capture', 'open-pdf', 'open-pdf-viewer', 'open-exam-planner', 'model-settings', 'model-select', 'fast-mode', 'fast-mode-state', 'model-hint', 'chat-count',
   'clear-chats', 'chat-list', 'chat-empty', 'status', 'quick-context-state', 'quick-reset',
   'quick-files', 'quick-attach', 'quick-messages', 'quick-empty', 'quick-compact', 'quick-none', 'quick-form', 'quick-input', 'quick-send'
 ].map((id) => [id, document.getElementById(id)]));
@@ -82,8 +83,9 @@ function quickMessageElement(entry) {
   const bubble = document.createElement('div');
   bubble.className = 'quick-bubble';
   if (entry.role === 'assistant') {
-    bubble.innerHTML = `${renderReasoning(entry.reasoning, { streaming: entry.streaming })}${renderMarkdown(entry.content)}`;
-    if (entry.streaming && !entry.content) bubble.textContent = 'Reading context…';
+    bubble.innerHTML = `${renderActivity(entry.activity)}${renderReasoning(entry.reasoning, { streaming: entry.streaming })}${renderMarkdown(entry.content)}`;
+    if (entry.streaming && !entry.content) bubble.append(document.createTextNode('Preparing answer…'));
+    bindActivityDisclosure(bubble, entry);
   } else {
     appendFileChips(bubble, entry.files);
     if (entry.imageDataUrl) {
@@ -144,6 +146,18 @@ async function quickChatGptContextAvailable() {
 async function quickPdfCapture(source, question) {
   const signal = quickCaptureController?.signal;
   try {
+    // Reuse the reader's complete/OCR-enriched index, including local files
+    // whose bytes cannot be fetched from a public PDF URL.
+    const prepared = await message({
+      type: 'SCHOLIA_GET_ACTIVE_CONTEXT', expectedTabId: source.tabId,
+      expectedFrameId: source.frameId, expectedUrl: source.tabUrl,
+      question, includeContext: true, maxChars: contextCharacterLimit(quickContextMode)
+    }).catch(() => null);
+    if (signal?.aborted) throw new DOMException('PDF capture was cancelled.', 'AbortError');
+    if (prepared?.pdfContextReady) {
+      if (prepared.extractedCharacters > 0) return { ...source, ...prepared, imageDataUrl: '' };
+      return message({ type: 'SCHOLIA_CAPTURE_ACTIVE_VISIBLE', expectedTabId: source.tabId });
+    }
     const blob = await fetchPdfBlob(source.pdfUrl, { signal });
     const extracted = await extractPdfContext(blob, { signal });
     const context = extracted.extractedCharacters
@@ -254,6 +268,9 @@ async function sendQuickChat(rawQuestion) {
     if (event.requestId !== requestId) return;
     if (event.type === 'token') {
       assistant.content += event.token || '';
+      scheduleQuickRender();
+    } else if (event.type === 'activity') {
+      addActivity(assistant, event.activity);
       scheduleQuickRender();
     } else if (event.type === 'reasoning') {
       assistant.reasoning = `${assistant.reasoning || ''}${event.token || ''}`;
@@ -431,6 +448,9 @@ const quickFiles = mountFileComposer({
 });
 
 elements.settings.addEventListener('click', () => chrome.runtime.openOptionsPage());
+elements['open-exam-planner'].addEventListener('click', () => {
+  openExamPlanner().then(() => window.close()).catch((error) => showStatus(error.message, true));
+});
 elements['model-settings'].addEventListener('click', () => chrome.runtime.openOptionsPage());
 elements['quick-compact'].addEventListener('click', () => setQuickContextMode(
   quickContextMode === CONTEXT_MODE_COMPACT ? CONTEXT_MODE_FULL : CONTEXT_MODE_COMPACT

@@ -25,6 +25,10 @@ struct ScholiaMacApp: App {
             SettingsView().environmentObject(model).scholiaButtonStyle(.automatic)
         }
         .commands {
+            CommandGroup(after: .appInfo) {
+                Button("Update Scholia…", action: ScholiaAppUpdater.open)
+                    .help("Build and install the latest changes from your Scholia folder, then reopen the app.")
+            }
             CommandGroup(after: .newItem) {
                 Button("Open Study Workspace", action: model.openStudyWorkspace)
                     .keyboardShortcut("1", modifiers: .command)
@@ -45,6 +49,7 @@ final class ScholiaAppDelegate: NSObject, NSApplicationDelegate {
         NSApp.servicesProvider = self
         NSUpdateDynamicServices()
         AppModel.shared.start()
+        if CommandLine.arguments.contains("--serve-study") { AppModel.shared.startStudyWebsite() }
         if !CommandLine.arguments.contains("--background") {
             AppModel.shared.openStudyWorkspace()
         }

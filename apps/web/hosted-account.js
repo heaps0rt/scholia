@@ -63,7 +63,7 @@ export function installHostedAccount({ request, notify, update }) {
         .join('');
     if (!dialog.open) select.value = state.providerID;
     dialog.querySelector('.account-email').textContent = state.account?.email || '';
-    document.querySelector('#review-due').hidden = true;
-    document.querySelector('#practice-this').hidden = true;
+    document.querySelector('#review-due').hidden = false;
+    document.querySelector('#practice-this').hidden = state.showingLibrary || !state.library.selectedCourseID;
   };
 }

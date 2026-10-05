@@ -1,8 +1,8 @@
 # Practice and review
 
-Structured practice runs in the Mac app and its local website. The independent
-hosted service offers conversational **Practice** tutoring but does not use the
-native session store or spaced review queue.
+Structured practice runs in the Mac app, its local website, and hosted accounts.
+The Mac and local website share a learning store; hosted practice belongs to the
+signed-in account and does not sync with the Mac.
 
 ## Start a session
 
@@ -11,15 +11,27 @@ or a topic from downloaded course materials. A selected figure stays with its
 source. The Practice starter opens the same setup without replacing your chat
 draft.
 
-Sessions default to three questions and accept one to five. Your selected
-provider generates them on request. Generation can be cancelled; changing the
+**Practice course** offers **Understand concepts**, **Active recall**,
+**Apply & solve**, and **Exam practice**. Choose the whole course, weak areas, or
+the current reading, with an optional topic focus. Sessions default to three
+questions and accept up to twelve. Course sessions rotate through readable saved
+pages, using one question per selected page; short courses may return fewer.
+A failed source-coverage check rejects the generated batch.
+
+The overview distinguishes attempted pages, independent correct answers, and
+pages to revisit. Missing downloads are shown separately. Assistance, disputed
+feedback, and changed sources cannot count as current independent success.
+Coverage describes practiced pages, not every concept or predicted exam results.
+Hosted generation uses saved text; native/local sessions can also retain a figure.
+Your selected provider generates questions on request. Generation can be cancelled; changing the
 reading cancels generation for the previous source.
 
 Recall practice keeps the source collapsed. Open-book practice records when you
 consult it. Questions that need a figure retain it. Hints reveal a concept, a
-method, then a partial step. **Show solution / worked example** is available
-before answering. **Explain in tutor** opens a conversation at the source while
-keeping the session. There is no timer.
+method, then a partial step. **Show solution / worked example** unlocks after a saved attempt in the current
+session; describing where you are stuck is enough to start. The recap does not
+bypass this gate. **Explain in tutor** opens Guide me with your attempt and records
+assistance, without attaching the private answer. There is no timer.
 
 ## Answers and feedback
 
@@ -70,10 +82,12 @@ advance it again. These are product defaults, not a claim about learning outcome
 Practice events live in `Study/Learning/events.sqlite`, separate from the library
 and chat history. SQLite transactions check session versions and stable event
 IDs so retries cannot duplicate attempts or overwrite a stale session.
-Native and local-web views use the same session and question IDs.
+Native and local-web views use the same session and question IDs. Hosted practice
+uses account-owned SQLite records with revision checks and stable event IDs.
+Its browser drafts and outbox are isolated by account.
 
 Saved questions, hints, solutions, attempts, and scheduling work without a
-provider. New questions and automatic feedback need one. A failed request leaves
+provider. Hosted practice still needs its server. New questions and automatic feedback need one. A failed request leaves
 your answer saved for later feedback or self-check.
 
 The local website needs the Mac app running. Browser drafts are kept per tab
@@ -84,6 +98,20 @@ and question. Switching provider or model does not reset a session.
 Solutions and rubrics are omitted from the initial browser response and hidden
 in native views until revealed. This does not guarantee that generated hints
 cannot give away an answer.
+
+## Tutoring behavior
+
+Explain, Guide me, and Practice share a prompt policy: teach concepts, inspect
+reasoning, and offer hints or small analogous examples rather than produce a
+complete assigned answer. Explain teaches directly; Guide me responds to an
+attempt; Practice waits for an answer and gives feedback. Ordinary summaries,
+translation, and correspondence remain supported.
+
+Practice generation creates new questions with private reference answers.
+Services enforce the attempt-before-reveal rule, including recap requests.
+Prompts cannot guarantee how every provider responds; check live model behavior
+when changing models. Worked-example fading and adaptive curriculum plans remain
+separate work.
 
 ## Development checks
 
@@ -96,5 +124,5 @@ npm run smoke:macos:workspace
 Fixtures cover attempts, revisions, hints, disputes, source changes, restart,
 concurrent writers, scheduling, and delayed feedback. The full smoke also checks
 the local website in Chromium. These tests use deterministic providers; live
-model quality still needs separate evaluation. See [Contributing](../CONTRIBUTING.md)
+model quality still needs separate evaluation. See [Contributing](CONTRIBUTING.md)
 for the rest of the checks.

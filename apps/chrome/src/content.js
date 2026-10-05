@@ -14,7 +14,6 @@ import {
 import { populateModelSelect } from './model-select.js';
 import {
   COMPACT_PACKED_CONTEXT_CHARS,
-  MAX_PACKED_CONTEXT_CHARS,
   packPageContext,
   packParentContext,
   packSiteContext
@@ -24,9 +23,10 @@ import { sendRuntimeMessage as extensionMessage } from './runtime-message.js';
 import { bridgeLaunchDecision } from './bridge-launch.js';
 import { formatUsageRemaining } from './usage.js';
 import { clipboardImageFile, normalizeImageFile } from './image-input.js';
-import { prepareEditedResend, replaceConversationPrefix } from './chat-edit.js';
-import { canExplainImageDirectly, DEFAULT_IMAGE_EXPLANATION, createUserTurn, requestConversation } from './chat-turn.js';
+import { prepareEditedResend, replaceConversationPrefix } from './chat/chat-edit.js';
+import { canExplainImageDirectly, DEFAULT_IMAGE_EXPLANATION, createUserTurn, requestConversation } from './chat/chat-turn.js';
 import { selectionContextForQuestion } from './selection-context.js';
+import { contextCharacterLimit, defaultContextMode } from './context-mode.js';
 import { detectDocumentLanguage, documentLanguageLabel } from './document-language.js';
 import { crawlSite, siteLinksFromDocument } from './site-context.js';
 import {
@@ -784,6 +784,7 @@ class ScholiaContent {
       url: pageCapture?.url || capture.url,
       packedContext: pageCapture?.packedContext,
       pdfLocalContext: pageCapture?.pdfLocalContext,
+      sourceKind: pageCapture?.sourceKind || capture.sourceKind,
       parentContext: packParentContext({
         ancestorContext: pageCapture?.parentContext,
         messages: Number.isInteger(messageIndex)
@@ -1187,7 +1188,9 @@ class ScholiaContent {
           imageDataUrl: '',
           ...capture
         }
-        : { ...await resolvedPageMetadata({ ...capture, forSelection: true }), ...capture };
+        : { ...await resolvedPageMetadata({
+          ...capture, forSelection: true, fullContext: this.settings?.includePageContext === false
+        }), ...capture };
     }
     if (!recursive && capture.kind === 'mail' && capture.mailContext) {
       capture = {
@@ -1291,7 +1294,7 @@ class ScholiaContent {
           : chatGptContextAttached ? 'ChatGPT context attached' : 'Selection only';
     const showLanguage = capture.imageOrigin !== 'pasted' && capture.imageOrigin !== 'selected';
     const language = showLanguage ? documentLanguageLabel(capture.pageLanguage) : '';
-    this.els.sourceContext.textContent = [language ? `Language: ${language}` : '', contextLabel]
+    this.els.sourceContext.textContent = [language ? `Language: ${language}` : '', contextLabel, capture.ocrNotice]
       .filter(Boolean).join(' · ');
     this.els.sourceContext.classList.toggle('is-attached', pageContextAttached || chatGptContextAttached);
     this.els.sourceImage.hidden = !capture.imageDataUrl;
@@ -1559,7 +1562,7 @@ class ScholiaContent {
     const compactContext = this.settings?.includePageContext !== false;
     const packedContext = selectionContextForQuestion(this.capture, question, {
       includePageContext: true,
-      maxChars: compactContext ? COMPACT_PACKED_CONTEXT_CHARS : MAX_PACKED_CONTEXT_CHARS
+      maxChars: contextCharacterLimit(defaultContextMode(this.settings))
     });
     this.capture.packedContext = packedContext;
     const chosen = this.selectedProviderModel();
@@ -1882,7 +1885,9 @@ class ScholiaContent {
       this.toast('Preparing the selected region…', 5000);
       const nextCapture = {
         kind: 'image', selection: '', preview: 'Captured screen region',
-        ...await resolvedPageMetadata({ forSelection: true, rect }), imageDataUrl, rect
+        ...await resolvedPageMetadata({
+          forSelection: true, rect, fullContext: this.settings?.includePageContext === false
+        }), imageDataUrl, rect
       };
       if (this.captureForConversation) {
         this.capture = nextCapture;
